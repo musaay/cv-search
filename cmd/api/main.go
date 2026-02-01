@@ -43,17 +43,27 @@ func main() {
 		log.Fatal("set DATABASE_URL environment variable (e.g. postgres://user:pass@host:5432/dbname?sslmode=disable)")
 	}
 
+	log.Println("Connecting to database...")
+	log.Println("DSN:", dsn)
+	
 	db, err := storage.NewDB(dsn)
 	if err != nil {
 		log.Fatal("db open:", err)
 	}
 	defer db.Close()
 
+	log.Println("Database connected successfully!")
+
 	apiSrv := api.NewAPI(db)
 	router := api.NewRouter(apiSrv)
 
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
 	srv := &http.Server{
-		Addr:         ":8080",
+		Addr:         ":" + port,
 		Handler:      router,
 		ReadTimeout:  30 * time.Second, // File upload için
 		WriteTimeout: 15 * time.Minute, // LLM processing + response için (Ollama 10 dakika + buffer)
@@ -73,7 +83,7 @@ func main() {
 		close(idleConnsClosed)
 	}()
 
-	log.Println("API server listening on :8080")
+	log.Printf("API server listening on :%s\n", port)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
