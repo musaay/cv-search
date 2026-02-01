@@ -8,3 +8,5 @@ RUN apt-get update && \
 
 # Enable pgvector extension on startup
 RUN echo "CREATE EXTENSION IF NOT EXISTS vector;" > /docker-entrypoint-initdb.d/01-enable-vector.sql
+
+# Railway deployment trigger
