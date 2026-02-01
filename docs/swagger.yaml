@@ -1,0 +1,348 @@
+basePath: /api
+definitions:
+  api.GraphRAGSearchRequest:
+    properties:
+      query:
+        type: string
+    type: object
+  discover.Result:
+    properties:
+      already_exists:
+        description: Indicates if candidate is already in DB
+        type: boolean
+      last_updated:
+        description: When candidate was last scraped
+        type: string
+      snippet:
+        type: string
+      title:
+        type: string
+      url:
+        type: string
+    type: object
+  storage.Candidate:
+    properties:
+      email:
+        type: string
+      experience:
+        type: string
+      location:
+        type: string
+      name:
+        type: string
+      resume_downloaded_at:
+        type: string
+      resume_file_path:
+        type: string
+      resume_url:
+        type: string
+      skills:
+        items:
+          type: string
+        type: array
+    type: object
+  storage.Criteria:
+    properties:
+      location:
+        type: string
+      name:
+        type: string
+      skills:
+        items:
+          type: string
+        type: array
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@swagger.io
+    name: API Support
+    url: http://www.swagger.io/support
+  description: AI-powered CV search with GraphRAG, Hybrid Search, and LLM-based ranking
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: CV Search & GraphRAG API
+  version: "1.0"
+paths:
+  /search/hybrid:
+    post:
+      consumes:
+      - application/json
+      description: Search candidates using multi-source retrieval (BM25 + Vector + Graph) with fusion and pure LLM reranking
+      parameters:
+      - description: Hybrid search request
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            query:
+              description: Natural language search query
+              type: string
+            bm25_weight:
+              description: 'BM25 weight (default: 0.3)'
+              type: number
+            vector_weight:
+              description: 'Vector weight (default: 0.4)'
+              type: number
+            graph_weight:
+              description: 'Graph weight (default: 0.3)'
+              type: number
+            top_k:
+              description: 'Per-source retrieval limit (default: 100)'
+              type: integer
+            final_top_n:
+              description: 'How many to send to LLM (default: 50)'
+              type: integer
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              query:
+                type: string
+              candidates:
+                items:
+                  properties:
+                    person_id:
+                      type: string
+                    name:
+                      type: string
+                    bm25_score:
+                      type: number
+                    vector_score:
+                      type: number
+                    graph_score:
+                      type: number
+                    fusion_score:
+                      type: number
+                    llm_score:
+                      type: number
+                    llm_reasoning:
+                      type: string
+                    rank:
+                      type: integer
+                  type: object
+                type: array
+              total_found:
+                type: integer
+              processing_time:
+                type: string
+              method:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Hybrid Search (BM25 + Vector + Graph + LLM)
+      tags:
+      - search
+  /cv/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload a CV file (PDF/DOCX) and extract entities using LLM
+      parameters:
+      - description: CV file (PDF or DOCX)
+        in: formData
+        name: file
+        required: true
+        type: file
+      - description: Candidate ID (optional)
+        in: formData
+        name: candidate_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Upload and parse CV
+      tags:
+      - cv
+  /discover:
+    post:
+      consumes:
+      - application/json
+      description: Discover candidate profiles using Google Custom Search API (supports
+        OR/AND logic for skills)
+      parameters:
+      - description: Discovery parameters
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            limit:
+              type: integer
+            location:
+              type: string
+            skills:
+              items:
+                type: string
+              type: array
+            skills_any_of:
+              type: boolean
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/discover.Result'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Discover candidate profiles
+      tags:
+      - discovery
+  /graph/skills/popular:
+    get:
+      description: Get most popular skills extracted from CVs
+      parameters:
+      - default: 20
+        description: Limit results
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get popular skills
+      tags:
+      - graph
+  /graph/stats:
+    get:
+      description: Get statistics about the knowledge graph (skill popularity, etc.)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get graph statistics
+      tags:
+      - graph
+  /graphrag/search:
+    post:
+      consumes:
+      - application/json
+      description: Search candidates using natural language powered by GraphRAG (Graph
+        + LLM)
+      parameters:
+      - description: Natural language search query
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.GraphRAGSearchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: GraphRAG Search
+      tags:
+      - graphrag
+  /search:
+    post:
+      consumes:
+      - application/json
+      description: Search for candidates based on criteria (name, location, skills)
+      parameters:
+      - description: Search criteria
+        in: body
+        name: criteria
+        required: true
+        schema:
+          $ref: '#/definitions/storage.Criteria'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/storage.Candidate'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Search candidates
+      tags:
+      - candidates
+schemes:
+- http
+swagger: "2.0"

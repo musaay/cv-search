@@ -1,0 +1,332 @@
+# 🎯 CV Search & GraphRAG
+
+> AI-powered recruitment platform with **GraphRAG**, **Hybrid Search**, and **LLM-based candidate ranking**
+
+[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791?style=flat&logo=postgresql)](https://www.postgresql.org/)
+[![Microsoft GraphRAG](https://img.shields.io/badge/GraphRAG-Inspired-7FBA00?style=flat&logo=microsoft)](https://github.com/microsoft/graphrag)
+[![OpenAI](https://img.shields.io/badge/OpenAI-Embeddings-412991?style=flat&logo=openai)](https://openai.com/)
+[![Groq](https://img.shields.io/badge/Groq-LLM-FF6B00?style=flat)](https://groq.com/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Deploy on Railway](https://img.shields.io/badge/Deploy%20on-Railway-0B0D0E?logo=railway)](https://railway.app/template)
+
+Modern bir Go tabanlı **Microsoft GraphRAG-inspired** aday keşif sistemi. CV dosyalarını parse eder, PostgreSQL knowledge graph'inde saklar ve REST API ile adayları doğal dilde sorgulama imkanı sunar.
+
+**🚀 Quick Deploy:** [Railway Deployment Guide](DEPLOY_NOW.md)
+
+
+## 🧠 Microsoft GraphRAG Yaklaşımı
+
+Bu proje, Microsoft'un GraphRAG (Graph Retrieval-Augmented Generation) metodolojisini CV recruitment domain'i için uyarlamıştır:
+
+### 🎯 GraphRAG Bileşenleri
+
+| Bileşen | Açıklama | Implementasyon |
+|---------|----------|----------------|
+| **Knowledge Graph** | Nodes (person, skill, company, education) ve edges (HAS_SKILL, WORKED_AT) | PostgreSQL + pgvector |
+| **Vector Embeddings** | Semantic search için 768-dimensional embeddings | OpenAI `text-embedding-3-small` |
+| **Community Detection** | Skill clusters ve career patterns | Leiden algorithm |
+| **LLM Integration** | Natural language query parsing ve ranking | Groq (llama-3.3-70b-versatile) |
+| **Hybrid Search** | Vector + Community + LLM combined retrieval | Custom implementation |
+
+### 🔬 Microsoft GraphRAG vs. Bu Proje
+
+**Microsoft'un Resmi GraphRAG:**
+- Python tabanlı research framework
+- GPT-4 odaklı (pahalı)
+- Genel amaçlı document processing
+- GB'larca veri işleme kapasitesi
+
+**Bizim Implementasyonumuz:**
+- ✅ Go tabanlı production-ready API
+- ✅ Cost-optimized (Groq LLM ücretsiz!)
+- ✅ CV recruitment'a özel
+- ✅ Lightweight ve hızlı
+- ✅ Railway deployment ready
+
+**Ortak Prensipler:**
+1. Graph-based knowledge representation
+2. Vector embeddings for semantic search  
+3. Community detection for context
+4. LLM-powered reasoning
+5. Hybrid retrieval strategy
+
+---
+
+## 🚀 Özellikler
+
+### Core Capabilities
+- 📄 **CV Upload & Parsing** - PDF/DOCX support with LLM-powered entity extraction
+- 🧠 **GraphRAG Search** - Knowledge graph-based semantic search
+- ⚡ **Hybrid Search Engine** - BM25 + Vector + Graph + LLM fusion
+- 🎯 **Pure LLM Ranking** - No heuristics, only AI-powered candidate scoring
+- 💾 **Smart Caching** - Reduced API costs with intelligent result caching
+
+### 🧠 GraphRAG Özellikleri
+
+- ✅ **LLM-Powered CV Extraction**: Groq (llama-3.3-70b) ile otomatik CV parsing
+- ✅ **Knowledge Graph**: PostgreSQL-based entity ve relationship modeling
+- ✅ **Vector Search**: OpenAI embeddings ile semantic similarity search
+- ✅ **Community Detection**: Leiden algorithm ile skill clustering
+- ✅ **Hybrid Search**: Vector + Community + LLM combined retrieval
+- ✅ **Natural Language Queries**: "Go developer with 5+ years experience" gibi sorgular
+- ✅ **Background Embedding Generation**: Async CV processing
+- ✅ **Entity Normalization**: "K8s" → "Kubernetes", "React.js" → "React"
+- ✅ **Proficiency Detection**: Beginner/Intermediate/Advanced/Expert classification
+
+### Search Methods
+
+#### 1. **Hybrid Search** (Recommended)
+Combines 3 retrieval methods with LLM reranking:
+- **BM25**: Keyword-based full-text search (PostgreSQL tsvector)
+- **Vector**: Semantic similarity (OpenAI embeddings + pgvector)
+- **Graph**: Relationship traversal (skills, companies, education)
+- **LLM Scoring**: GPT-4o-mini or Llama-3.3-70b for final ranking
+
+```bash
+POST /api/search/hybrid
+{
+  "query": "Senior Java developer with banking experience",
+  "bm25_weight": 0.3,
+  "vector_weight": 0.4,
+  "graph_weight": 0.3,
+  "final_top_n": 10
+}
+```
+
+#### 2. **GraphRAG Search**
+Microsoft GraphRAG-style community-based search
+
+#### 3. **Semantic Search**
+Pure vector similarity with LLM enhancement
+
+## �� Tech Stack
+
+| Category | Technology |
+|----------|-----------|
+| **Backend** | Go 1.21+ |
+| **Database** | PostgreSQL 16+ with pgvector |
+| **Vector Store** | pgvector (768-dim OpenAI embeddings) |
+| **LLM Providers** | OpenAI (GPT-4o-mini), Groq (Llama-3.3-70b) |
+| **Graph** | Custom Knowledge Graph (PostgreSQL) |
+| **Full-Text** | PostgreSQL tsvector (BM25-style) |
+| **API Docs** | Swagger/OpenAPI |
+
+## 🛠️ Installation
+
+### Prerequisites
+- Go 1.21+
+- PostgreSQL 16+ with pgvector extension
+- OpenAI API key (for embeddings)
+- Groq API key (optional, for LLM)
+
+### 1. Clone Repository
+```bash
+git clone https://github.com/musaay/cv-search.git
+cd cv-search
+```
+
+### 2. Install Dependencies
+```bash
+go mod download
+```
+
+### 3. Setup Database
+```bash
+# Create database
+createdb cv_search
+
+# Enable pgvector extension
+psql cv_search -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# Run migrations
+psql cv_search < migrations/001_create_candidates.sql
+psql cv_search < migrations/002_extended_features.sql
+psql cv_search < migrations/003_create_graph_data.sql
+psql cv_search < migrations/004_add_vector_support.sql
+psql cv_search < migrations/005_add_communities.sql
+```
+
+### 4. Configure Environment
+```bash
+cp .env.example .env
+# Edit .env with your credentials
+```
+
+Required environment variables:
+```env
+DATABASE_URL=postgres://user:pass@localhost:5432/cv_search?sslmode=disable
+OPENAI_API_KEY=sk-...  # Required for embeddings
+LLM_PROVIDER=openai    # or 'groq'
+LLM_MODEL=gpt-4o-mini
+GROQ_API_KEY=gsk_...   # If using Groq
+```
+
+### 5. Run Server
+```bash
+go run cmd/api/main.go
+```
+
+Server starts on `http://localhost:8080`
+
+## 📚 API Documentation
+
+### Swagger UI
+Visit `http://localhost:8080/swagger/index.html` for interactive API docs.
+
+### Key Endpoints
+
+#### Upload CV
+```bash
+curl -X POST http://localhost:8080/api/cv/upload \
+  -F "file=@resume.pdf"
+```
+
+#### Hybrid Search
+```bash
+curl -X POST http://localhost:8080/api/search/hybrid \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Full stack developer with React and Go experience",
+    "final_top_n": 5
+  }'
+```
+
+Response:
+```json
+{
+  "candidates": [
+    {
+      "person_id": "person_1",
+      "name": "John Doe",
+      "llm_score": 92.5,
+      "llm_reasoning": "Strong full-stack experience with React and Go...",
+      "fusion_score": 0.85,
+      "rank": 1
+    }
+  ],
+  "processing_time": "1.2s"
+}
+```
+
+## 🔧 Configuration
+
+### LLM Provider Switching
+Switch between OpenAI and Groq in `.env`:
+
+**OpenAI (Reliable, higher limits):**
+```env
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+```
+
+**Groq (Fast, free tier):**
+```env
+LLM_PROVIDER=groq
+LLM_MODEL=llama-3.3-70b-versatile
+GROQ_API_KEY=gsk_...
+```
+
+### Hybrid Search Weights
+Customize retrieval weights:
+```json
+{
+  "bm25_weight": 0.3,    // Keyword matching
+  "vector_weight": 0.4,   // Semantic similarity
+  "graph_weight": 0.3     // Relationship strength
+}
+```
+
+## 📊 Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   Hybrid Search Engine                  │
+├─────────────┬─────────────┬─────────────┬──────────────┤
+│   BM25      │   Vector    │   Graph     │   LLM        │
+│  (Keyword)  │ (Semantic)  │ (Relations) │  (Scoring)   │
+└─────────────┴─────────────┴─────────────┴──────────────┘
+      │              │              │              │
+      ├──────────────┴──────────────┴──────────────┤
+      │        Reciprocal Rank Fusion (RRF)        │
+      └────────────────────┬───────────────────────┘
+                           │
+                    ┌──────▼──────┐
+                    │  LLM Scorer │
+                    │  (GPT-4o)   │
+                    └─────────────┘
+```
+
+## 📈 Performance
+
+- **Average Query Time**: 1-3 seconds
+- **Cache Hit Rate**: ~40% (5-minute TTL)
+- **Concurrent Requests**: 100+ supported
+- **Database**: Handles 1000+ candidates efficiently
+
+## 📁 Proje Yapısı
+
+```
+cv-search/
+├── cmd/
+│   ├── api/
+│   │   └── main.go              # REST API server entry point
+│   └── tools/
+│       └── backfill_positions/
+│           └── main.go          # Data migration tool
+├── internal/
+│   ├── api/
+│   │   ├── handler.go           # API endpoint handlers
+│   │   ├── router.go            # API routes
+│   │   ├── cv_handler.go        # CV upload & processing
+│   │   ├── background_jobs.go   # Background embedding worker
+│   │   ├── embedding_handler.go # Embedding generation API
+│   │   ├── graphrag_handler.go  # GraphRAG endpoints
+│   │   └── hybrid_handler.go    # Hybrid search endpoints
+│   ├── config/
+│   │   └── config.go            # Configuration management
+│   ├── cv/
+│   │   ├── parser.go            # CV file parsing
+│   │   └── extractor.go         # Entity extraction
+│   ├── graphrag/
+│   │   ├── embeddings.go        # OpenAI embedding service
+│   │   ├── enhanced_search.go   # Hybrid search engine
+│   │   ├── graph.go             # Knowledge graph construction
+│   │   ├── llm_search.go        # LLM-powered semantic search
+│   │   ├── community.go         # Community detection
+│   │   └── search.go            # Graph-based search
+│   ├── llm/
+│   │   └── service.go           # LLM service interface
+│   └── storage/
+│       ├── db.go                # Database layer
+│       └── models.go            # Data models
+├── migrations/
+│   ├── 001_create_candidates.sql
+│   ├── 002_extended_features.sql
+│   ├── 003_create_graph_data.sql
+│   ├── 004_add_vector_support.sql
+│   └── 005_add_communities.sql
+├── docs/
+│   ├── HYBRID_SEARCH.md         # Technical deep dive
+│   ├── TESTING.md               # Test scenarios
+│   └── TEST_RESULTS.md          # Performance metrics
+└── uploads/                     # CV file storage (gitignored)
+```
+
+## 🎓 Documentation
+
+- [Hybrid Search Guide](docs/HYBRID_SEARCH.md) - Technical deep dive
+- [Testing Guide](docs/TESTING.md) - Test scenarios
+- [Test Results](docs/TEST_RESULTS.md) - Performance metrics
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) file
+
+## 📧 Contact
+
+Project Link: [https://github.com/musaay/cv-search](https://github.com/musaay/cv-search)
+
+---
+
+**Built with ❤️ using Go and AI**

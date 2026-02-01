@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+
+# Environment files (will be set via Railway env vars)
+.env
+.env.local
+
+# Uploads (Railway will have persistent volume)
+uploads/
+*.pdf
+*.docx
+*.txt
+
+# Temp files
+tmp/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Binaries
+cv-search-api
+cv-search

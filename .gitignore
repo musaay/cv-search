@@ -1,0 +1,53 @@
+# Downloads directory
+downloads/
+
+# Environment variables (contains sensitive data)
+.env
+.env.local
+
+# Binary files
+bin/
+main
+cv-search
+cv-search-api
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Logs
+*.log
+logs/
+api.log
+server.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Uploads directory (user uploaded files)
+uploads/*
+!uploads/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.old
+*.bak
+README.old.md
