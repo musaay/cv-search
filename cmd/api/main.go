@@ -28,9 +28,9 @@ import (
 // @license.name MIT
 // @license.url https://opensource.org/licenses/MIT
 
-// @host localhost:8080
+// @host cv-search-production.up.railway.app
 // @BasePath /api
-// @schemes http
+// @schemes https
 
 func main() {
 	// Load .env file

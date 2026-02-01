@@ -52,7 +52,7 @@ definitions:
           type: string
         type: array
     type: object
-host: localhost:8080
+host: cv-search-production.up.railway.app
 info:
   contact:
     email: support@swagger.io
@@ -344,5 +344,5 @@ paths:
       tags:
       - candidates
 schemes:
-- http
+- https
 swagger: "2.0"

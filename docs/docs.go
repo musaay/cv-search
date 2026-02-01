@@ -472,9 +472,9 @@ const docTemplate = `{
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
 	Version:          "1.0",
-	Host:             "localhost:8080",
+	Host:             "cv-search-production.up.railway.app",
 	BasePath:         "/api",
-	Schemes:          []string{"http"},
+	Schemes:          []string{"https"},
 	Title:            "CV Search & GraphRAG API",
 	Description:      "AI-powered CV search with GraphRAG, Hybrid Search, and LLM-based ranking",
 	InfoInstanceName: "swagger",
