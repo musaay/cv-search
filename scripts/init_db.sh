@@ -19,25 +19,26 @@ else
 fi
 
 echo ""
-echo "📝 Running migrations..."
+echo "📝 Running migration..."
 echo "================================================"
 
 # Get script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-MIGRATIONS_DIR="$SCRIPT_DIR/../migrations"
+MIGRATION_FILE="$SCRIPT_DIR/../migrations/complete_setup.sql"
 
-# Run each migration in order
-for migration in "$MIGRATIONS_DIR"/*.sql; do
-    filename=$(basename "$migration")
-    echo "⚙️  Running: $filename"
-    psql "$DB_NAME" -f "$migration"
-    if [ $? -eq 0 ]; then
-        echo "✅ Completed: $filename"
-    else
-        echo "❌ Failed: $filename"
-        exit 1
-    fi
-done
+if [ ! -f "$MIGRATION_FILE" ]; then
+    echo "❌ Migration file not found: $MIGRATION_FILE"
+    exit 1
+fi
+
+echo "⚙️  Running: complete_setup.sql"
+psql "$DB_NAME" -f "$MIGRATION_FILE"
+if [ $? -eq 0 ]; then
+    echo "✅ Migration completed successfully!"
+else
+    echo "❌ Migration failed"
+    exit 1
+fi
 
 echo ""
 echo "================================================"

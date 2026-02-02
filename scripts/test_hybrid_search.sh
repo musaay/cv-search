@@ -1,14 +1,15 @@
 #!/bin/bash
 # Test Suite for Hybrid Search API
 
-BASE_URL="http://localhost:8080"
+BASE_URL="${API_URL:-http://localhost:8080}"
 BOLD='\033[1m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${BOLD}=== Hybrid Search API Test Suite ===${NC}\n"
+echo -e "${BOLD}=== Hybrid Search API Test Suite ===${NC}"
+echo -e "${BOLD}Testing: ${GREEN}$BASE_URL${NC}\n"
 
 # Test 1: Health Check
 echo -e "${BLUE}Test 1: Health Check${NC}"
