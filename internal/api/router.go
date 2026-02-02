@@ -11,7 +11,7 @@ func NewRouter(a *API) http.Handler {
 
 	// Swagger documentation - must be registered first
 	mux.Handle("/swagger/", httpSwagger.Handler(
-		httpSwagger.URL("http://localhost:8080/swagger/doc.json"),
+		httpSwagger.URL("/swagger/doc.json"),
 	))
 
 	// Health check (for Railway, k8s, etc.)
