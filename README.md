@@ -2,17 +2,24 @@
 
 > AI-powered recruitment platform with **GraphRAG**, **Hybrid Search**, and **LLM-based candidate ranking**
 
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791?style=flat&logo=postgresql)](https://www.postgresql.org/)
+[![pgvector](https://img.shields.io/badge/pgvector-0.7+-blue)](https://github.com/pgvector/pgvector)
 [![Microsoft GraphRAG](https://img.shields.io/badge/GraphRAG-Inspired-7FBA00?style=flat&logo=microsoft)](https://github.com/microsoft/graphrag)
 [![OpenAI](https://img.shields.io/badge/OpenAI-Embeddings-412991?style=flat&logo=openai)](https://openai.com/)
 [![Groq](https://img.shields.io/badge/Groq-LLM-FF6B00?style=flat)](https://groq.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Deploy on Railway](https://img.shields.io/badge/Deploy%20on-Railway-0B0D0E?logo=railway)](https://railway.app/template)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app)
+
+**🚀 Live Demo:** [cv-search-production.up.railway.app](https://cv-search-production.up.railway.app/swagger/index.html)
 
 Modern bir Go tabanlı **Microsoft GraphRAG-inspired** aday keşif sistemi. CV dosyalarını parse eder, PostgreSQL knowledge graph'inde saklar ve REST API ile adayları doğal dilde sorgulama imkanı sunar.
 
-**🚀 Quick Deploy:** [Railway Deployment Guide](DEPLOY_NOW.md)
+**� Quick Links:**
+- [🚀 Deployment Guide](DEPLOYMENT.md) - Railway + Neon setup
+- [📖 API Documentation](https://cv-search-production.up.railway.app/swagger/index.html)
+- [🔬 Hybrid Search Details](docs/HYBRID_SEARCH.md)
+- [🧪 Testing Guide](docs/TESTING.md)
 
 
 ## 🧠 Microsoft GraphRAG Yaklaşımı
@@ -104,7 +111,7 @@ Pure vector similarity with LLM enhancement
 
 | Category | Technology |
 |----------|-----------|
-| **Backend** | Go 1.21+ |
+| **Backend** | Go 1.24+ |
 | **Database** | PostgreSQL 16+ with pgvector |
 | **Vector Store** | pgvector (768-dim OpenAI embeddings) |
 | **LLM Providers** | OpenAI (GPT-4o-mini), Groq (Llama-3.3-70b) |
@@ -115,7 +122,7 @@ Pure vector similarity with LLM enhancement
 ## 🛠️ Installation
 
 ### Prerequisites
-- Go 1.21+
+- Go 1.24+
 - PostgreSQL 16+ with pgvector extension
 - OpenAI API key (for embeddings)
 - Groq API key (optional, for LLM)
@@ -140,11 +147,14 @@ createdb cv_search
 psql cv_search -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
 # Run migrations
-psql cv_search < migrations/001_create_candidates.sql
-psql cv_search < migrations/002_extended_features.sql
-psql cv_search < migrations/003_create_graph_data.sql
-psql cv_search < migrations/004_add_vector_support.sql
-psql cv_search < migrations/005_add_communities.sql
+```bash
+psql "your-database-url" < migrations/complete_setup.sql
+```
+
+Or use the init script:
+```bash
+chmod +x scripts/init_db.sh
+./scripts/init_db.sh
 ```
 
 ### 4. Configure Environment
@@ -155,11 +165,12 @@ cp .env.example .env
 
 Required environment variables:
 ```env
-DATABASE_URL=postgres://user:pass@localhost:5432/cv_search?sslmode=disable
-OPENAI_API_KEY=sk-...  # Required for embeddings
-LLM_PROVIDER=openai    # or 'groq'
-LLM_MODEL=gpt-4o-mini
-GROQ_API_KEY=gsk_...   # If using Groq
+DATABASE_URL=postgresql://user:pass@localhost:5432/cv_search?sslmode=disable
+OPENAI_API_KEY=sk-...          # Required for embeddings
+LLM_PROVIDER=groq              # 'openai' or 'groq'
+LLM_MODEL=llama-3.3-70b-versatile  # or 'gpt-4o-mini'
+GROQ_API_KEY=gsk_...           # If using Groq (free!)
+USE_LLM=true
 ```
 
 ### 5. Run Server
@@ -169,22 +180,34 @@ go run cmd/api/main.go
 
 Server starts on `http://localhost:8080`
 
+---
+
+## 🚀 Production Deployment
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for complete Railway + Neon deployment guide.
+
+**Live Demo:** https://cv-search-production.up.railway.app
+
+---
+
 ## 📚 API Documentation
 
 ### Swagger UI
-Visit `http://localhost:8080/swagger/index.html` for interactive API docs.
+- **Local:** http://localhost:8080/swagger/index.html
+- **Production:** https://cv-search-production.up.railway.app/swagger/index.html
 
 ### Key Endpoints
 
 #### Upload CV
 ```bash
-curl -X POST http://localhost:8080/api/cv/upload \
-  -F "file=@resume.pdf"
+curl -X POST https://cv-search-production.up.railway.app/api/cv/upload \
+  -F "file=@resume.pdf" \
+  -F "name=John Doe"
 ```
 
 #### Hybrid Search
 ```bash
-curl -X POST http://localhost:8080/api/search/hybrid \
+curl -X POST https://cv-search-production.up.railway.app/api/search/hybrid \
   -H "Content-Type: application/json" \
   -d '{
     "query": "Full stack developer with React and Go experience",
