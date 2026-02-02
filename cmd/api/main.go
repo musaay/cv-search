@@ -45,7 +45,7 @@ func main() {
 
 	log.Println("Connecting to database...")
 	log.Println("DSN:", dsn)
-	
+
 	db, err := storage.NewDB(dsn)
 	if err != nil {
 		log.Fatal("db open:", err)
