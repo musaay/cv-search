@@ -1,4 +1,9 @@
-# 🎯 CV Search & GraphRAG
+# 🎯 CV Search & **📚 Quick Links:**
+- [🚀 Deployment Guide](DEPLOYMENT.md) - Railway + Neon setup
+- [📖 API Documentation](https://cv-search-production.up.railway.app/swagger/index.html)
+- [🔬 Hybrid Search Details](docs/HYBRID_SEARCH.md)
+- [📊 GraphRAG Comparison](docs/GRAPHRAG_COMPARISON.md) - Microsoft GraphRAG vs Our Implementation
+- [🧪 Testing Guide](docs/TESTING.md)RAG
 
 > AI-powered recruitment platform with **GraphRAG**, **Hybrid Search**, and **LLM-based candidate ranking**
 
