@@ -398,13 +398,22 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 				if err := skillRows.Scan(&skillPropsJSON, &edgePropsJSON); err == nil {
 					var skillProps, edgeProps map[string]interface{}
 					if err := json.Unmarshal(skillPropsJSON, &skillProps); err == nil {
+						// Safe type assertion for name
+						name, ok := skillProps["name"].(string)
+						if !ok {
+							continue
+						}
 						skill := SkillNode{
-							Name: skillProps["name"].(string),
+							Name: name,
 						}
 						if prof, ok := skillProps["proficiency"].(string); ok {
 							skill.Proficiency = prof
 						}
+						// Load years from edge properties
 						if err := json.Unmarshal(edgePropsJSON, &edgeProps); err == nil {
+							if prof, ok := edgeProps["proficiency"].(string); ok && skill.Proficiency == "" {
+								skill.Proficiency = prof
+							}
 							if years, ok := edgeProps["years_of_experience"].(float64); ok {
 								skill.YearsOfExperience = int(years)
 							}
