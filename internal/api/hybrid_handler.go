@@ -38,6 +38,9 @@ type FusedCandidateResponse struct {
 	TotalExperienceYears int                    `json:"total_experience_years,omitempty"`
 	Skills               []graphrag.SkillNode   `json:"skills,omitempty"`
 	Companies            []graphrag.CompanyNode `json:"companies,omitempty"`
+	Community            string                 `json:"community,omitempty"`            // Primary community
+	Communities          []string               `json:"communities,omitempty"`          // All matching communities
+	CommunityScores      map[string]float64     `json:"community_scores,omitempty"`     // Score for each community
 	BM25Score            float64                `json:"bm25_score"`
 	VectorScore          float64                `json:"vector_score"`
 	GraphScore           float64                `json:"graph_score"`
@@ -132,6 +135,9 @@ func (a *API) HybridSearchHandler(w http.ResponseWriter, r *http.Request) {
 			TotalExperienceYears: c.TotalExperienceYears,
 			Skills:               c.Skills,
 			Companies:            c.Companies,
+			Community:            c.Community,
+			Communities:          c.Communities,
+			CommunityScores:      c.CommunityScores,
 			BM25Score:            c.BM25Score,
 			VectorScore:          c.VectorScore,
 			GraphScore:           c.GraphScore,

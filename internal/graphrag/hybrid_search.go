@@ -39,11 +39,14 @@ type FusedCandidate struct {
 	TotalExperienceYears int
 	Skills               []SkillNode
 	Companies            []CompanyNode
-	BM25Score            float64 // 0-1 normalized
-	VectorScore          float64 // 0-1 normalized
-	GraphScore           float64 // 0-1 normalized
-	FusionScore          float64 // Weighted combination
-	LLMScore             float64 // Final LLM reranking score (0-100)
+	Community            string             // Primary community
+	Communities          []string           // All matching communities (Microsoft GraphRAG style)
+	CommunityScores      map[string]float64 // Normalized scores for each community
+	BM25Score            float64            // 0-1 normalized
+	VectorScore          float64            // 0-1 normalized
+	GraphScore           float64            // 0-1 normalized
+	FusionScore          float64            // Weighted combination
+	LLMScore             float64            // Final LLM reranking score (0-100)
 	LLMReasoning         string
 	Rank                 int
 }
@@ -57,20 +60,24 @@ type VectorSearchResult struct {
 
 // HybridSearchConfig defines weights for fusion
 type HybridSearchConfig struct {
-	BM25Weight   float64 // Default: 0.3
-	VectorWeight float64 // Default: 0.4
-	GraphWeight  float64 // Default: 0.3
-	TopK         int     // How many candidates to retrieve from each source
-	FinalTopN    int     // How many to send to LLM for reranking
+	BM25Weight          float64 // Default: 0.3
+	VectorWeight        float64 // Default: 0.4
+	GraphWeight         float64 // Default: 0.3
+	TopK                int     // How many candidates to retrieve from each source
+	FinalTopN           int     // How many to send to LLM for reranking
+	UseCommunityFilter  bool    // Enable community-based filtering (default: false, enabled at 50+ candidates)
+	CommunityThreshold  int     // Auto-enable community filter at this candidate count (default: 50)
 }
 
 func DefaultHybridConfig() HybridSearchConfig {
 	return HybridSearchConfig{
-		BM25Weight:   0.3,
-		VectorWeight: 0.4,
-		GraphWeight:  0.3,
-		TopK:         100,
-		FinalTopN:    0, // 0 = no limit, send all candidates to LLM
+		BM25Weight:         0.3,
+		VectorWeight:       0.4,
+		GraphWeight:        0.3,
+		TopK:               100,
+		FinalTopN:          0, // 0 = no limit, send all candidates to LLM
+		UseCommunityFilter: false,
+		CommunityThreshold: 50,
 	}
 }
 
@@ -152,6 +159,44 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 
 	// Step 2.5: Enrich candidates with full details (skills, companies, etc.)
 	h.enrichCandidates(ctx, fusedCandidates)
+
+	// Step 2.6: Community-based filtering (if enabled) - Microsoft GraphRAG style
+	shouldUseCommunityFilter := config.UseCommunityFilter || len(fusedCandidates) >= config.CommunityThreshold
+	if shouldUseCommunityFilter && len(fusedCandidates) > 0 {
+		// Infer relevant communities from query
+		queryCommunities := FindCommunitiesByQuery(query)
+		log.Printf("[HybridSearch] Community filter enabled. Query matches communities: %v", queryCommunities)
+		
+		// Filter candidates by overlapping communities (Microsoft GraphRAG approach)
+		filteredCandidates := make([]FusedCandidate, 0, len(fusedCandidates))
+		for _, candidate := range fusedCandidates {
+			// Check if candidate has ANY matching community
+			matched := false
+			for _, qc := range queryCommunities {
+				for _, candidateCommunity := range candidate.Communities {
+					if candidateCommunity == qc {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					break
+				}
+			}
+			
+			if matched {
+				filteredCandidates = append(filteredCandidates, candidate)
+			}
+		}
+		
+		if len(filteredCandidates) > 0 {
+			log.Printf("[HybridSearch] Community filter reduced candidates from %d to %d", 
+				len(fusedCandidates), len(filteredCandidates))
+			fusedCandidates = filteredCandidates
+		} else {
+			log.Printf("[HybridSearch] Community filter matched 0 candidates, keeping all")
+		}
+	}
 
 	// Step 3: Take top N for LLM reranking (if FinalTopN > 0, otherwise send all)
 	if config.FinalTopN > 0 && len(fusedCandidates) > config.FinalTopN {
@@ -458,5 +503,11 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 				}
 			}
 		}
+
+		// Assign communities based on skills (Microsoft GraphRAG style: overlapping communities)
+		primary, communities, scores := FindCommunities(candidates[i].Skills, 0.3) // 30% threshold
+		candidates[i].Community = primary
+		candidates[i].Communities = communities
+		candidates[i].CommunityScores = scores
 	}
 }

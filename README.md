@@ -1,4 +1,9 @@
-# 🎯 CV Search & Gra**🚀 Live Demo:** [cv-search-production.up.railway.app](https://cv-search-production.up.railway.app/swagger/index.html)
+# 🎯 CV Search & Gra**🚀 Li**📚 Quick Links:**
+- [🚀 Deployment Guide](DEPLOYMENT.md) - Railway + Neon setup
+- [📖 API Documentation](https://cv-search-production.up.railway.app/swagger/index.html)
+- [🔬 Hybrid Search Details](docs/HYBRID_SEARCH.md)
+- [🏘️ Community Detection](docs/COMMUNITY_DETECTION.md) - Microsoft GraphRAG-style overlapping communities
+- [🧪 Testing Guide](docs/TESTING.md)mo:** [cv-search-production.up.railway.app](https://cv-search-production.up.railway.app/swagger/index.html)
 
 Modern bir Go tabanlı **Microsoft GraphRAG-inspired** aday keşif sistemi. CV dosyalarını parse eder, PostgreSQL knowledge graph'inde saklar ve REST API ile adayları doğal dilde sorgulama imkanı sunar.
 
