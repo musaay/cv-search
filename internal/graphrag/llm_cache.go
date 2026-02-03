@@ -3,6 +3,7 @@ package graphrag
 import (
 	"crypto/md5"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -81,9 +82,14 @@ func (c *LLMCache) CleanExpired() {
 
 // generateKey creates a unique cache key from query and candidate list
 func (c *LLMCache) generateKey(query string, candidateIDs []string) string {
-	// Combine query + sorted candidate IDs for consistent key
+	// Sort candidate IDs for consistent key (order doesn't matter)
+	sorted := make([]string, len(candidateIDs))
+	copy(sorted, candidateIDs)
+	sort.Strings(sorted)
+	
+	// Combine query + sorted candidate IDs
 	data := query
-	for _, id := range candidateIDs {
+	for _, id := range sorted {
 		data += "|" + id
 	}
 	hash := md5.Sum([]byte(data))

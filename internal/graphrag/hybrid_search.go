@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 )
 
 // HybridSearchEngine combines BM25 + Vector + Graph search
@@ -60,13 +61,13 @@ type VectorSearchResult struct {
 
 // HybridSearchConfig defines weights for fusion
 type HybridSearchConfig struct {
-	BM25Weight          float64 // Default: 0.3
-	VectorWeight        float64 // Default: 0.4
-	GraphWeight         float64 // Default: 0.3
-	TopK                int     // How many candidates to retrieve from each source
-	FinalTopN           int     // How many to send to LLM for reranking
-	UseCommunityFilter  bool    // Enable community-based filtering (default: false, enabled at 50+ candidates)
-	CommunityThreshold  int     // Auto-enable community filter at this candidate count (default: 50)
+	BM25Weight         float64 // Default: 0.3
+	VectorWeight       float64 // Default: 0.4
+	GraphWeight        float64 // Default: 0.3
+	TopK               int     // How many candidates to retrieve from each source
+	FinalTopN          int     // How many to send to LLM for reranking
+	UseCommunityFilter bool    // Enable community-based filtering (default: false, enabled at 50+ candidates)
+	CommunityThreshold int     // Auto-enable community filter at this candidate count (default: 50)
 }
 
 func DefaultHybridConfig() HybridSearchConfig {
@@ -166,7 +167,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		// Infer relevant communities from query
 		queryCommunities := FindCommunitiesByQuery(query)
 		log.Printf("[HybridSearch] Community filter enabled. Query matches communities: %v", queryCommunities)
-		
+
 		// Filter candidates by overlapping communities (Microsoft GraphRAG approach)
 		filteredCandidates := make([]FusedCandidate, 0, len(fusedCandidates))
 		for _, candidate := range fusedCandidates {
@@ -183,14 +184,14 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 					break
 				}
 			}
-			
+
 			if matched {
 				filteredCandidates = append(filteredCandidates, candidate)
 			}
 		}
-		
+
 		if len(filteredCandidates) > 0 {
-			log.Printf("[HybridSearch] Community filter reduced candidates from %d to %d", 
+			log.Printf("[HybridSearch] Community filter reduced candidates from %d to %d",
 				len(fusedCandidates), len(filteredCandidates))
 			fusedCandidates = filteredCandidates
 		} else {
@@ -387,22 +388,56 @@ func maxGraphScore(results []CandidateResult) float64 {
 }
 
 // enrichCandidates loads full candidate details (skills, companies, etc.)
+// OPTIMIZED: Batch loading to avoid N+1 queries
 func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []FusedCandidate) {
+	if len(candidates) == 0 {
+		return
+	}
+
+	// Build person ID list for batch queries
+	personIDs := make([]interface{}, 0, len(candidates))
+	personIDToIndex := make(map[string]int)
 	for i := range candidates {
-		if candidates[i].PersonID == "" {
+		if candidates[i].PersonID != "" {
+			personIDs = append(personIDs, candidates[i].PersonID)
+			personIDToIndex[candidates[i].PersonID] = i
+		}
+	}
+
+	if len(personIDs) == 0 {
+		return
+	}
+
+	// Build placeholders for IN clause ($1, $2, $3, ...)
+	placeholders := make([]string, len(personIDs))
+	for i := range personIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+	}
+	inClause := "(" + strings.Join(placeholders, ",") + ")"
+
+	// BATCH 1: Load all person details in one query
+	personQuery := fmt.Sprintf(`
+		SELECT node_id, properties 
+		FROM graph_nodes 
+		WHERE node_id IN %s AND node_type = 'person'
+	`, inClause)
+
+	personRows, err := h.db.QueryContext(ctx, personQuery, personIDs...)
+	if err != nil {
+		log.Printf("[HybridSearch] Failed to batch load persons: %v", err)
+		return
+	}
+	defer personRows.Close()
+
+	for personRows.Next() {
+		var personID string
+		var propsJSON []byte
+		if err := personRows.Scan(&personID, &propsJSON); err != nil {
 			continue
 		}
 
-		// Load person details from graph
-		var propsJSON []byte
-		err := h.db.QueryRowContext(ctx, `
-			SELECT properties 
-			FROM graph_nodes 
-			WHERE node_id = $1 AND node_type = 'person'
-		`, candidates[i].PersonID).Scan(&propsJSON)
-
-		if err != nil {
-			log.Printf("[HybridSearch] Failed to load person %s: %v", candidates[i].PersonID, err)
+		idx, ok := personIDToIndex[personID]
+		if !ok {
 			continue
 		}
 
@@ -413,101 +448,135 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 
 		// Update candidate fields
 		if name, ok := props["name"].(string); ok {
-			candidates[i].Name = name
+			candidates[idx].Name = name
 		}
 		if pos, ok := props["current_position"].(string); ok {
-			candidates[i].CurrentPosition = pos
+			candidates[idx].CurrentPosition = pos
 		}
 		if sen, ok := props["seniority"].(string); ok {
-			candidates[i].Seniority = sen
+			candidates[idx].Seniority = sen
 		}
 		if exp, ok := props["total_experience_years"].(float64); ok {
-			candidates[i].TotalExperienceYears = int(exp)
+			candidates[idx].TotalExperienceYears = int(exp)
 		}
+	}
 
-		// Load skills
-		skillRows, err := h.db.QueryContext(ctx, `
-			SELECT s.properties, e.properties
-			FROM graph_nodes p
-			JOIN graph_edges e ON p.id = e.source_node_id
-			JOIN graph_nodes s ON e.target_node_id = s.id
-			WHERE p.node_id = $1
-			  AND e.edge_type = 'HAS_SKILL'
-			  AND s.node_type = 'skill'
-		`, candidates[i].PersonID)
+	// BATCH 2: Load all skills in one query
+	skillQuery := fmt.Sprintf(`
+		SELECT p.node_id, s.properties, e.properties
+		FROM graph_nodes p
+		JOIN graph_edges e ON p.id = e.source_node_id
+		JOIN graph_nodes s ON e.target_node_id = s.id
+		WHERE p.node_id IN %s
+		  AND e.edge_type = 'HAS_SKILL'
+		  AND s.node_type = 'skill'
+	`, inClause)
 
-		if err == nil {
-			defer skillRows.Close()
-			for skillRows.Next() {
-				var skillPropsJSON, edgePropsJSON []byte
-				if err := skillRows.Scan(&skillPropsJSON, &edgePropsJSON); err == nil {
-					var skillProps, edgeProps map[string]interface{}
-					if err := json.Unmarshal(skillPropsJSON, &skillProps); err == nil {
-						// Safe type assertion for name
-						name, ok := skillProps["name"].(string)
-						if !ok {
-							continue
-						}
-						skill := SkillNode{
-							Name: name,
-						}
-						if prof, ok := skillProps["proficiency"].(string); ok {
-							skill.Proficiency = prof
-						}
-						// Load years from edge properties
-						if err := json.Unmarshal(edgePropsJSON, &edgeProps); err == nil {
-							if prof, ok := edgeProps["proficiency"].(string); ok && skill.Proficiency == "" {
-								skill.Proficiency = prof
-							}
-							if years, ok := edgeProps["years_of_experience"].(float64); ok {
-								skill.YearsOfExperience = int(years)
-							}
-						}
-						candidates[i].Skills = append(candidates[i].Skills, skill)
-					}
+	skillRows, err := h.db.QueryContext(ctx, skillQuery, personIDs...)
+	if err != nil {
+		log.Printf("[HybridSearch] Failed to batch load skills: %v", err)
+	} else {
+		defer skillRows.Close()
+		for skillRows.Next() {
+			var personID string
+			var skillPropsJSON, edgePropsJSON []byte
+			if err := skillRows.Scan(&personID, &skillPropsJSON, &edgePropsJSON); err != nil {
+				continue
+			}
+
+			idx, ok := personIDToIndex[personID]
+			if !ok {
+				continue
+			}
+
+			var skillProps, edgeProps map[string]interface{}
+			if err := json.Unmarshal(skillPropsJSON, &skillProps); err != nil {
+				continue
+			}
+
+			name, ok := skillProps["name"].(string)
+			if !ok {
+				continue
+			}
+
+			skill := SkillNode{Name: name}
+			if prof, ok := skillProps["proficiency"].(string); ok {
+				skill.Proficiency = prof
+			}
+
+			// Load years from edge properties
+			if err := json.Unmarshal(edgePropsJSON, &edgeProps); err == nil {
+				if prof, ok := edgeProps["proficiency"].(string); ok && skill.Proficiency == "" {
+					skill.Proficiency = prof
+				}
+				if years, ok := edgeProps["years_of_experience"].(float64); ok {
+					skill.YearsOfExperience = int(years)
 				}
 			}
+
+			candidates[idx].Skills = append(candidates[idx].Skills, skill)
 		}
+	}
 
-		// Load companies
-		companyRows, err := h.db.QueryContext(ctx, `
-			SELECT c.properties, e.properties
-			FROM graph_nodes p
-			JOIN graph_edges e ON p.id = e.source_node_id
-			JOIN graph_nodes c ON e.target_node_id = c.id
-			WHERE p.node_id = $1
-			  AND e.edge_type = 'WORKED_AT'
-			  AND c.node_type = 'company'
-		`, candidates[i].PersonID)
+	// BATCH 3: Load all companies in one query
+	companyQuery := fmt.Sprintf(`
+		SELECT p.node_id, c.properties, e.properties
+		FROM graph_nodes p
+		JOIN graph_edges e ON p.id = e.source_node_id
+		JOIN graph_nodes c ON e.target_node_id = c.id
+		WHERE p.node_id IN %s
+		  AND e.edge_type = 'WORKED_AT'
+		  AND c.node_type = 'company'
+	`, inClause)
 
-		if err == nil {
-			defer companyRows.Close()
-			for companyRows.Next() {
-				var companyPropsJSON, edgePropsJSON []byte
-				if err := companyRows.Scan(&companyPropsJSON, &edgePropsJSON); err == nil {
-					var companyProps, edgeProps map[string]interface{}
-					if err := json.Unmarshal(companyPropsJSON, &companyProps); err == nil {
-						company := CompanyNode{
-							Name: companyProps["name"].(string),
-						}
-						if err := json.Unmarshal(edgePropsJSON, &edgeProps); err == nil {
-							if pos, ok := edgeProps["position"].(string); ok {
-								company.Position = pos
-							}
-							if isCurr, ok := edgeProps["is_current"].(bool); ok {
-								company.IsCurrent = isCurr
-							}
-						}
-						candidates[i].Companies = append(candidates[i].Companies, company)
-					}
+	companyRows, err := h.db.QueryContext(ctx, companyQuery, personIDs...)
+	if err != nil {
+		log.Printf("[HybridSearch] Failed to batch load companies: %v", err)
+	} else {
+		defer companyRows.Close()
+		for companyRows.Next() {
+			var personID string
+			var companyPropsJSON, edgePropsJSON []byte
+			if err := companyRows.Scan(&personID, &companyPropsJSON, &edgePropsJSON); err != nil {
+				continue
+			}
+
+			idx, ok := personIDToIndex[personID]
+			if !ok {
+				continue
+			}
+
+			var companyProps, edgeProps map[string]interface{}
+			if err := json.Unmarshal(companyPropsJSON, &companyProps); err != nil {
+				continue
+			}
+
+			name, ok := companyProps["name"].(string)
+			if !ok {
+				continue
+			}
+
+			company := CompanyNode{Name: name}
+			if err := json.Unmarshal(edgePropsJSON, &edgeProps); err == nil {
+				if pos, ok := edgeProps["position"].(string); ok {
+					company.Position = pos
+				}
+				if isCurr, ok := edgeProps["is_current"].(bool); ok {
+					company.IsCurrent = isCurr
 				}
 			}
-		}
 
-		// Assign communities based on skills (Microsoft GraphRAG style: overlapping communities)
-		primary, communities, scores := FindCommunities(candidates[i].Skills, 0.3) // 30% threshold
-		candidates[i].Community = primary
-		candidates[i].Communities = communities
-		candidates[i].CommunityScores = scores
+			candidates[idx].Companies = append(candidates[idx].Companies, company)
+		}
+	}
+
+	// Assign communities (after skills are loaded)
+	for i := range candidates {
+		if len(candidates[i].Skills) > 0 {
+			primary, communities, scores := FindCommunities(candidates[i].Skills, 0.3)
+			candidates[i].Community = primary
+			candidates[i].Communities = communities
+			candidates[i].CommunityScores = scores
+		}
 	}
 }
