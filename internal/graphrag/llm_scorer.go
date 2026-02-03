@@ -91,8 +91,8 @@ func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate
 **Your Task:**
 1. Evaluate each candidate's match quality (0-100 score)
 2. Provide confidence level (0-1)
-3. Explain your reasoning
-4. List key evidence (skills, experience, etc.)
+3. Explain your reasoning with specific details (IMPORTANT: mention years of experience for key skills)
+4. List key evidence (skills with years, experience, etc.)
 5. Assign fit level: excellent/good/fair/poor
 
 **Scoring Guidelines:**
@@ -102,11 +102,16 @@ func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate
 - 40-59: Fair match (meets some requirements)
 - 0-39: Poor match (doesn't meet requirements)
 
+**IMPORTANT:** Skills are listed with proficiency levels and years of experience (e.g., "Java (Expert, 13 yrs)"). 
+Pay close attention to years of experience when scoring - more years in relevant skills should result in higher scores.
+
 **Candidates:**
 `, query)
 
 	// Add candidate details
 	for i, c := range candidates {
+		skills := skillNames(c.Skills)
+		companies := companyNames(c.Companies)
 		prompt += fmt.Sprintf(`
 ---
 Candidate %d:
@@ -120,7 +125,7 @@ Candidate %d:
 - Rank from Fusion: #%d
 
 `, i+1, c.PersonID, c.Name, c.CurrentPosition, c.Seniority,
-			skillNames(c.Skills), companyNames(c.Companies),
+			skills, companies,
 			c.FusionScore, c.BM25Score, c.VectorScore, c.GraphScore, c.Rank)
 	}
 

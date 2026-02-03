@@ -31,20 +31,20 @@ type HybridSearchResponse struct {
 
 // FusedCandidateResponse represents a candidate with all scores
 type FusedCandidateResponse struct {
-	PersonID             string             `json:"person_id"`
-	Name                 string             `json:"name"`
-	CurrentPosition      string             `json:"current_position,omitempty"`
-	Seniority            string             `json:"seniority,omitempty"`
-	TotalExperienceYears int                `json:"total_experience_years,omitempty"`
-	Skills               []graphrag.SkillNode    `json:"skills,omitempty"`
-	Companies            []graphrag.CompanyNode  `json:"companies,omitempty"`
-	BM25Score            float64            `json:"bm25_score"`
-	VectorScore          float64            `json:"vector_score"`
-	GraphScore           float64            `json:"graph_score"`
-	FusionScore          float64            `json:"fusion_score"`
-	LLMScore             float64            `json:"llm_score"`
-	LLMReasoning         string             `json:"llm_reasoning,omitempty"`
-	Rank                 int                `json:"rank"`
+	PersonID             string                 `json:"person_id"`
+	Name                 string                 `json:"name"`
+	CurrentPosition      string                 `json:"current_position,omitempty"`
+	Seniority            string                 `json:"seniority,omitempty"`
+	TotalExperienceYears int                    `json:"total_experience_years,omitempty"`
+	Skills               []graphrag.SkillNode   `json:"skills,omitempty"`
+	Companies            []graphrag.CompanyNode `json:"companies,omitempty"`
+	BM25Score            float64                `json:"bm25_score"`
+	VectorScore          float64                `json:"vector_score"`
+	GraphScore           float64                `json:"graph_score"`
+	FusionScore          float64                `json:"fusion_score"`
+	LLMScore             float64                `json:"llm_score"`
+	LLMReasoning         string                 `json:"llm_reasoning,omitempty"`
+	Rank                 int                    `json:"rank"`
 }
 
 // HybridSearchHandler handles hybrid search requests
