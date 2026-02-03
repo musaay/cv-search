@@ -227,7 +227,7 @@ func (s *EmbeddingService) SimilaritySearch(ctx context.Context, queryText strin
 		ORDER BY similarity ASC
 		LIMIT $2
 	`
-	
+
 	rows, err := s.db.QueryContext(ctx, query, embeddingJSON, topK)
 	if err != nil {
 		return nil, nil, err

@@ -2,10 +2,10 @@ package graphrag
 
 import (
 	"context"
+	"cv-search/internal/llm"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"cv-search/internal/llm"
 )
 
 type GraphBuilder struct {

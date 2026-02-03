@@ -31,15 +31,20 @@ type HybridSearchResponse struct {
 
 // FusedCandidateResponse represents a candidate with all scores
 type FusedCandidateResponse struct {
-	PersonID     string  `json:"person_id"`
-	Name         string  `json:"name"`
-	BM25Score    float64 `json:"bm25_score"`
-	VectorScore  float64 `json:"vector_score"`
-	GraphScore   float64 `json:"graph_score"`
-	FusionScore  float64 `json:"fusion_score"`
-	LLMScore     float64 `json:"llm_score"`
-	LLMReasoning string  `json:"llm_reasoning,omitempty"`
-	Rank         int     `json:"rank"`
+	PersonID             string             `json:"person_id"`
+	Name                 string             `json:"name"`
+	CurrentPosition      string             `json:"current_position,omitempty"`
+	Seniority            string             `json:"seniority,omitempty"`
+	TotalExperienceYears int                `json:"total_experience_years,omitempty"`
+	Skills               []graphrag.SkillNode    `json:"skills,omitempty"`
+	Companies            []graphrag.CompanyNode  `json:"companies,omitempty"`
+	BM25Score            float64            `json:"bm25_score"`
+	VectorScore          float64            `json:"vector_score"`
+	GraphScore           float64            `json:"graph_score"`
+	FusionScore          float64            `json:"fusion_score"`
+	LLMScore             float64            `json:"llm_score"`
+	LLMReasoning         string             `json:"llm_reasoning,omitempty"`
+	Rank                 int                `json:"rank"`
 }
 
 // HybridSearchHandler handles hybrid search requests
@@ -120,15 +125,20 @@ func (a *API) HybridSearchHandler(w http.ResponseWriter, r *http.Request) {
 	var candidates []FusedCandidateResponse
 	for _, c := range results {
 		candidates = append(candidates, FusedCandidateResponse{
-			PersonID:     c.PersonID,
-			Name:         c.Name,
-			BM25Score:    c.BM25Score,
-			VectorScore:  c.VectorScore,
-			GraphScore:   c.GraphScore,
-			FusionScore:  c.FusionScore,
-			LLMScore:     c.LLMScore,
-			LLMReasoning: c.LLMReasoning,
-			Rank:         c.Rank,
+			PersonID:             c.PersonID,
+			Name:                 c.Name,
+			CurrentPosition:      c.CurrentPosition,
+			Seniority:            c.Seniority,
+			TotalExperienceYears: c.TotalExperienceYears,
+			Skills:               c.Skills,
+			Companies:            c.Companies,
+			BM25Score:            c.BM25Score,
+			VectorScore:          c.VectorScore,
+			GraphScore:           c.GraphScore,
+			FusionScore:          c.FusionScore,
+			LLMScore:             c.LLMScore,
+			LLMReasoning:         c.LLMReasoning,
+			Rank:                 c.Rank,
 		})
 	}
 
