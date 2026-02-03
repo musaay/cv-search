@@ -210,15 +210,19 @@ func (g *GraphBuilder) BuildFromLLMExtraction(ctx context.Context, cvID int, ext
 					})
 
 					// Create HAS_SKILL relationship
+					relProps := map[string]interface{}{
+						"proficiency": skill.Proficiency,
+					}
+					if skill.Years != nil {
+						relProps["years_of_experience"] = *skill.Years
+					}
 					relationships = append(relationships, Relationship{
 						SourceType: "person",
 						SourceID:   personID,
 						TargetType: "skill",
 						TargetID:   skillID,
 						EdgeType:   "HAS_SKILL",
-						Properties: map[string]interface{}{
-							"proficiency": skill.Proficiency,
-						},
+						Properties: relProps,
 					})
 				}
 			}

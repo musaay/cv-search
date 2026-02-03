@@ -25,8 +25,9 @@ type CandidateResult struct {
 }
 
 type SkillNode struct {
-	Name        string `json:"name"`
-	Proficiency string `json:"proficiency"`
+	Name              string `json:"name"`
+	Proficiency       string `json:"proficiency"`
+	YearsOfExperience int    `json:"years_of_experience,omitempty"`
 }
 
 type CompanyNode struct {

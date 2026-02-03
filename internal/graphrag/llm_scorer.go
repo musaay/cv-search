@@ -236,7 +236,9 @@ func skillNames(skills []SkillNode) string {
 	}
 	names := make([]string, len(skills))
 	for i, s := range skills {
-		if s.Proficiency != "" {
+		if s.Proficiency != "" && s.YearsOfExperience > 0 {
+			names[i] = fmt.Sprintf("%s (%s, %d yrs)", s.Name, s.Proficiency, s.YearsOfExperience)
+		} else if s.Proficiency != "" {
 			names[i] = fmt.Sprintf("%s (%s)", s.Name, s.Proficiency)
 		} else {
 			names[i] = s.Name

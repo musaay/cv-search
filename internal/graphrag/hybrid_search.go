@@ -31,20 +31,21 @@ func NewHybridSearchEngine(db *sql.DB, llm LLMClient, openaiKey string) *HybridS
 
 // FusedCandidate represents a candidate with scores from multiple sources
 type FusedCandidate struct {
-	CandidateID     int
-	PersonID        string // Graph uses string IDs
-	Name            string
-	CurrentPosition string
-	Seniority       string
-	Skills          []SkillNode
-	Companies       []CompanyNode
-	BM25Score       float64 // 0-1 normalized
-	VectorScore     float64 // 0-1 normalized
-	GraphScore      float64 // 0-1 normalized
-	FusionScore     float64 // Weighted combination
-	LLMScore        float64 // Final LLM reranking score (0-100)
-	LLMReasoning    string
-	Rank            int
+	CandidateID          int
+	PersonID             string // Graph uses string IDs
+	Name                 string
+	CurrentPosition      string
+	Seniority            string
+	TotalExperienceYears int
+	Skills               []SkillNode
+	Companies            []CompanyNode
+	BM25Score            float64 // 0-1 normalized
+	VectorScore          float64 // 0-1 normalized
+	GraphScore           float64 // 0-1 normalized
+	FusionScore          float64 // Weighted combination
+	LLMScore             float64 // Final LLM reranking score (0-100)
+	LLMReasoning         string
+	Rank                 int
 }
 
 // VectorSearchResult represents a candidate from vector search
@@ -375,10 +376,13 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 		if sen, ok := props["seniority"].(string); ok {
 			candidates[i].Seniority = sen
 		}
+		if exp, ok := props["total_experience_years"].(float64); ok {
+			candidates[i].TotalExperienceYears = int(exp)
+		}
 
 		// Load skills
 		skillRows, err := h.db.QueryContext(ctx, `
-			SELECT s.properties
+			SELECT s.properties, e.properties
 			FROM graph_nodes p
 			JOIN graph_edges e ON p.id = e.source_node_id
 			JOIN graph_nodes s ON e.target_node_id = s.id
@@ -390,15 +394,20 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 		if err == nil {
 			defer skillRows.Close()
 			for skillRows.Next() {
-				var skillPropsJSON []byte
-				if err := skillRows.Scan(&skillPropsJSON); err == nil {
-					var skillProps map[string]interface{}
+				var skillPropsJSON, edgePropsJSON []byte
+				if err := skillRows.Scan(&skillPropsJSON, &edgePropsJSON); err == nil {
+					var skillProps, edgeProps map[string]interface{}
 					if err := json.Unmarshal(skillPropsJSON, &skillProps); err == nil {
 						skill := SkillNode{
 							Name: skillProps["name"].(string),
 						}
 						if prof, ok := skillProps["proficiency"].(string); ok {
 							skill.Proficiency = prof
+						}
+						if err := json.Unmarshal(edgePropsJSON, &edgeProps); err == nil {
+							if years, ok := edgeProps["years_of_experience"].(float64); ok {
+								skill.YearsOfExperience = int(years)
+							}
 						}
 						candidates[i].Skills = append(candidates[i].Skills, skill)
 					}

@@ -217,17 +217,18 @@ func (s *EmbeddingService) SimilaritySearch(ctx context.Context, queryText strin
 	embeddingJSON, _ := json.Marshal(queryEmbedding)
 
 	// Vector similarity search (only person nodes for hybrid search)
-	rows, err := s.db.QueryContext(ctx, `
+	query := `
 		SELECT 
 			node_id,
-			1 - (embedding <=> $1) as similarity
+			1 - (embedding <=> $1::vector) as similarity
 		FROM graph_nodes
 		WHERE embedding IS NOT NULL 
 		  AND node_type = 'person'
-		ORDER BY embedding <=> $1
+		ORDER BY similarity ASC
 		LIMIT $2
-	`, embeddingJSON, topK)
-
+	`
+	
+	rows, err := s.db.QueryContext(ctx, query, embeddingJSON, topK)
 	if err != nil {
 		return nil, nil, err
 	}

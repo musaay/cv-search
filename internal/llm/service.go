@@ -183,6 +183,8 @@ Extract and return ONLY valid JSON (no markdown, no explanation) with this exact
 Important:
 - Normalize skill names (e.g., "K8s" → "Kubernetes", "JS" → "JavaScript", "React.js" → "React")
 - Infer proficiency from context (e.g., "expert in Java" → "Expert", "familiar with Python" → "Beginner")
+- For skills, calculate years from work history (e.g., "Java at Company X (2018-2023)" → years: 5)
+- If skill mentioned multiple times, sum all usage periods
 - Calculate duration from date ranges if available
 - Extract implicit skills (e.g., "built microservices" → add "Microservices")
 - Return empty arrays if no data found for a category
