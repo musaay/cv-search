@@ -16,17 +16,17 @@ type EmbeddingJob struct {
 
 // CVProcessingJob represents a background CV processing task (LLM + Graph)
 type CVProcessingJob struct {
-	JobID      int64
-	CVFileID   int64
-	CVText     string
-	Timestamp  time.Time
+	JobID     int64
+	CVFileID  int64
+	CVText    string
+	Timestamp time.Time
 }
 
 // StartBackgroundWorkers initializes background job workers
 func (a *API) StartBackgroundWorkers() {
 	// CV processing worker (LLM extraction + graph building)
 	go a.cvProcessingWorker()
-	
+
 	// Embedding worker
 	go a.embeddingWorker()
 

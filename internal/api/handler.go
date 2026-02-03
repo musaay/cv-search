@@ -80,8 +80,8 @@ func NewAPI(db *storage.DB) *API {
 		llmSearchEngine:      llmSearchEngine,
 		enhancedSearchEngine: enhancedSearchEngine,
 		hybridSearchEngine:   hybridSearchEngine,
-		cvProcessingQueue:    make(chan CVProcessingJob, 50),  // Buffer for 50 CV processing jobs
-		embeddingQueue:       make(chan EmbeddingJob, 100),    // Buffer for 100 embedding jobs
+		cvProcessingQueue:    make(chan CVProcessingJob, 50), // Buffer for 50 CV processing jobs
+		embeddingQueue:       make(chan EmbeddingJob, 100),   // Buffer for 100 embedding jobs
 	}
 
 	// Start background workers

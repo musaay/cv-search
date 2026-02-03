@@ -75,7 +75,7 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 	} else if existingCV != nil {
 		// CV already exists - return existing info
 		log.Printf("[DUPLICATE CHECK] Duplicate CV detected: %s (existing ID: %d)", parsedCV.Filename, existingCV.ID)
-		
+
 		response := map[string]interface{}{
 			"cv_id":              existingCV.ID,
 			"filename":           existingCV.Filename,
@@ -85,7 +85,7 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 			"original_upload_at": existingCV.UploadedAt,
 			"duplicate":          true,
 		}
-		
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(response)
@@ -358,4 +358,3 @@ func (a *API) GetJobStatusHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
-
