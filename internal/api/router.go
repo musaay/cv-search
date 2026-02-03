@@ -26,6 +26,7 @@ func NewRouter(a *API) http.Handler {
 
 	// CV & Graph endpoints
 	mux.HandleFunc("/api/cv/upload", a.CVUploadHandler)
+	mux.HandleFunc("/api/cv/job/", a.GetJobStatusHandler) // Job status endpoint
 	mux.HandleFunc("/api/graph/stats", a.GetGraphStatsHandler)
 	mux.HandleFunc("/api/graph/skills/popular", a.GetPopularSkillsHandler)
 

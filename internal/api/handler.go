@@ -19,6 +19,7 @@ type API struct {
 	llmSearchEngine      *graphrag.LLMSearchEngine      // LLM-only semantic search
 	enhancedSearchEngine *graphrag.EnhancedSearchEngine // Vector + Community + LLM search (Microsoft GraphRAG)
 	hybridSearchEngine   *graphrag.HybridSearchEngine   // BM25 + Vector + Graph + LLM reranking
+	cvProcessingQueue    chan CVProcessingJob           // Background queue for async CV processing (LLM + Graph)
 	embeddingQueue       chan EmbeddingJob              // Background queue for async embedding generation
 }
 
@@ -79,7 +80,8 @@ func NewAPI(db *storage.DB) *API {
 		llmSearchEngine:      llmSearchEngine,
 		enhancedSearchEngine: enhancedSearchEngine,
 		hybridSearchEngine:   hybridSearchEngine,
-		embeddingQueue:       make(chan EmbeddingJob, 100), // Buffer for 100 jobs
+		cvProcessingQueue:    make(chan CVProcessingJob, 50),  // Buffer for 50 CV processing jobs
+		embeddingQueue:       make(chan EmbeddingJob, 100),    // Buffer for 100 embedding jobs
 	}
 
 	// Start background workers

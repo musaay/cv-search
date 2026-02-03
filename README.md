@@ -1,9 +1,14 @@
-# 🎯 CV Search & **📚 Quick Links:**
+# 🎯 CV Search & Gra**🚀 Live Demo:** [cv-search-production.up.railway.app](https://cv-search-production.up.railway.app/swagger/index.html)
+
+Modern bir Go tabanlı **Microsoft GraphRAG-inspired** aday keşif sistemi. CV dosyalarını parse eder, PostgreSQL knowledge graph'inde saklar ve REST API ile adayları doğal dilde sorgulama imkanı sunar.
+
+
+## 🧠 Microsoft GraphRAG YaklaşımıQuick Links:**
 - [🚀 Deployment Guide](DEPLOYMENT.md) - Railway + Neon setup
 - [📖 API Documentation](https://cv-search-production.up.railway.app/swagger/index.html)
 - [🔬 Hybrid Search Details](docs/HYBRID_SEARCH.md)
 - [📊 GraphRAG Comparison](docs/GRAPHRAG_COMPARISON.md) - Microsoft GraphRAG vs Our Implementation
-- [🧪 Testing Guide](docs/TESTING.md)RAG
+- [🧪 Testing Guide](docs/TESTING.md)
 
 > AI-powered recruitment platform with **GraphRAG**, **Hybrid Search**, and **LLM-based candidate ranking**
 
@@ -68,21 +73,25 @@ Bu proje, Microsoft'un GraphRAG (Graph Retrieval-Augmented Generation) metodoloj
 ## 🚀 Özellikler
 
 ### Core Capabilities
-- 📄 **CV Upload & Parsing** - PDF/DOCX support with LLM-powered entity extraction
+- 📄 **Async CV Upload** - Instant response (11ms), background LLM processing (318x faster)
+- 🔍 **Duplicate Detection** - SHA-256 content hashing prevents duplicate CVs
 - 🧠 **GraphRAG Search** - Knowledge graph-based semantic search
 - ⚡ **Hybrid Search Engine** - BM25 + Vector + Graph + LLM fusion
 - 🎯 **Pure LLM Ranking** - No heuristics, only AI-powered candidate scoring
 - 💾 **Smart Caching** - Reduced API costs with intelligent result caching
+- 📊 **Job Status Tracking** - Monitor async CV processing progress
 
 ### 🧠 GraphRAG Özellikleri
 
 - ✅ **LLM-Powered CV Extraction**: Groq (llama-3.3-70b) ile otomatik CV parsing
+- ✅ **Async Background Processing**: CV upload 11ms response, 318x performance improvement
+- ✅ **Duplicate Detection**: SHA-256 content hashing ile duplicate CV prevention
 - ✅ **Knowledge Graph**: PostgreSQL-based entity ve relationship modeling
 - ✅ **Vector Search**: OpenAI embeddings ile semantic similarity search
 - ✅ **Community Detection**: Leiden algorithm ile skill clustering
 - ✅ **Hybrid Search**: Vector + Community + LLM combined retrieval
 - ✅ **Natural Language Queries**: "Go developer with 5+ years experience" gibi sorgular
-- ✅ **Background Embedding Generation**: Async CV processing
+- ✅ **Job Status Tracking**: Real-time CV processing status monitoring
 - ✅ **Entity Normalization**: "K8s" → "Kubernetes", "React.js" → "React"
 - ✅ **Proficiency Detection**: Beginner/Intermediate/Advanced/Expert classification
 

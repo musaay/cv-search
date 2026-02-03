@@ -82,11 +82,15 @@ CREATE TABLE IF NOT EXISTS cv_files (
     file_size INTEGER,
     parsed_text TEXT,
     uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    parsed_at TIMESTAMP WITH TIME ZONE
+    parsed_at TIMESTAMP WITH TIME ZONE,
+    content_hash TEXT,  -- SHA-256 hash for duplicate detection
+    job_id INTEGER      -- References cv_upload_jobs(id), added later via FK
 );
 
 CREATE INDEX IF NOT EXISTS idx_cv_files_candidate_id ON cv_files(candidate_id);
 CREATE INDEX IF NOT EXISTS idx_cv_files_uploaded_at ON cv_files(uploaded_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cv_files_content_hash ON cv_files(content_hash);
+CREATE INDEX IF NOT EXISTS idx_cv_files_filename_size ON cv_files(filename, file_size);
 
 CREATE TABLE IF NOT EXISTS cv_entities (
     id SERIAL PRIMARY KEY,
@@ -101,6 +105,7 @@ CREATE INDEX IF NOT EXISTS idx_cv_entities_cv_file_id ON cv_entities(cv_file_id)
 CREATE INDEX IF NOT EXISTS idx_cv_entities_type ON cv_entities(entity_type);
 
 COMMENT ON TABLE cv_files IS 'Uploaded CV files and parsed text';
+COMMENT ON COLUMN cv_files.content_hash IS 'SHA-256 hash of parsed CV text for duplicate detection';
 COMMENT ON TABLE cv_entities IS 'Extracted entities (skills, companies, etc.)';
 
 -- =====================================================
@@ -224,6 +229,48 @@ CREATE INDEX IF NOT EXISTS idx_candidate_scores_created_at ON candidate_scores(c
 COMMENT ON TABLE candidate_scores IS 'Hybrid search results with scoring breakdown';
 
 -- =====================================================
+-- 7. ASYNC CV UPLOAD JOBS (Background Processing)
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS cv_upload_jobs (
+    id SERIAL PRIMARY KEY,
+    cv_file_id INTEGER NOT NULL REFERENCES cv_files(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    -- Status: pending, processing, completed, failed
+    
+    error_message TEXT,
+    progress JSONB DEFAULT '{}',
+    -- Progress tracking: {"step": "extraction|graph|embedding", "entities_count": 10}
+    
+    created_at TIMESTAMP DEFAULT NOW(),
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    
+    retry_count INTEGER DEFAULT 0,
+    max_retries INTEGER DEFAULT 3
+);
+
+-- Index for job status queries
+CREATE INDEX IF NOT EXISTS idx_cv_upload_jobs_status ON cv_upload_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_cv_upload_jobs_cv_file ON cv_upload_jobs(cv_file_id);
+
+COMMENT ON TABLE cv_upload_jobs IS 'Tracks async CV processing jobs (LLM extraction + graph building)';
+COMMENT ON COLUMN cv_upload_jobs.status IS 'Job status: pending, processing, completed, failed';
+COMMENT ON COLUMN cv_upload_jobs.progress IS 'JSON object tracking processing progress';
+
+-- Add foreign key constraint for cv_files.job_id (now that cv_upload_jobs exists)
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'cv_files_job_id_fkey' AND table_name = 'cv_files'
+    ) THEN
+        ALTER TABLE cv_files ADD CONSTRAINT cv_files_job_id_fkey 
+            FOREIGN KEY (job_id) REFERENCES cv_upload_jobs(id);
+    END IF;
+END $$;
+
+-- =====================================================
 -- SETUP COMPLETE
 -- =====================================================
 -- Tables created:
@@ -232,4 +279,5 @@ COMMENT ON TABLE candidate_scores IS 'Hybrid search results with scoring breakdo
 -- - graph_nodes, graph_edges (with vector embeddings)
 -- - graph_communities, community_members
 -- - candidate_scores
+-- - cv_upload_jobs (async processing)
 -- Extensions: pgvector

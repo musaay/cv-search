@@ -216,6 +216,79 @@ func (db *DB) SaveCVFile(ctx context.Context, candidateID *int, filename, filePa
     return cvID, err
 }
 
+// SaveCVFileWithHash saves CV file with content hash for duplicate detection
+func (db *DB) SaveCVFileWithHash(ctx context.Context, candidateID *int, filename, filePath, fileType, parsedText string, fileSize int64, contentHash string) (int, error) {
+    var cvID int
+    query := `
+        INSERT INTO cv_files (candidate_id, filename, file_path, file_type, file_size, parsed_text, content_hash, uploaded_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        ON CONFLICT (content_hash) DO UPDATE 
+        SET uploaded_at = NOW()
+        RETURNING id
+    `
+    
+    log.Printf("[DB] Saving CV with hash: %s (length: %d)", contentHash[:16], len(contentHash))
+    
+    err := db.connection.QueryRowContext(ctx, query, 
+        candidateID, filename, filePath, fileType, fileSize, parsedText, contentHash,
+    ).Scan(&cvID)
+    
+    if err != nil {
+        log.Printf("[DB] Error saving CV with hash: %v", err)
+        return 0, err
+    }
+    
+    log.Printf("[DB] CV saved successfully with ID: %d", cvID)
+    return cvID, nil
+}
+
+// FindCVByHash checks if a CV with the same content hash already exists
+func (db *DB) FindCVByHash(ctx context.Context, contentHash string) (*CVFileInfo, error) {
+    var info CVFileInfo
+    query := `
+        SELECT id, filename, file_size, uploaded_at, candidate_id
+        FROM cv_files
+        WHERE content_hash = $1
+        LIMIT 1
+    `
+    err := db.connection.QueryRowContext(ctx, query, contentHash).Scan(
+        &info.ID, &info.Filename, &info.FileSize, &info.UploadedAt, &info.CandidateID,
+    )
+    
+    if err == sql.ErrNoRows {
+        return nil, nil // Not found
+    }
+    if err != nil {
+        return nil, err
+    }
+    
+    return &info, nil
+}
+
+// FindPersonByName searches for existing person node by name (fuzzy match)
+func (db *DB) FindPersonByName(ctx context.Context, name string) (*PersonInfo, error) {
+    var info PersonInfo
+    query := `
+        SELECT node_id, properties->>'name' as name, properties->>'current_position' as position
+        FROM graph_nodes
+        WHERE node_type = 'person' 
+        AND LOWER(properties->>'name') = LOWER($1)
+        LIMIT 1
+    `
+    err := db.connection.QueryRowContext(ctx, query, name).Scan(
+        &info.NodeID, &info.Name, &info.CurrentPosition,
+    )
+    
+    if err == sql.ErrNoRows {
+        return nil, nil // Not found
+    }
+    if err != nil {
+        return nil, err
+    }
+    
+    return &info, nil
+}
+
 // SaveCVEntity saves extracted entity from CV
 func (db *DB) SaveCVEntity(ctx context.Context, cvFileID int, entityType, entityValue string, confidence float64) error {
     query := `
@@ -230,3 +303,150 @@ func (db *DB) SaveCVEntity(ctx context.Context, cvFileID int, entityType, entity
 func (db *DB) GetConnection() *sql.DB {
     return db.connection
 }
+
+// CreateCVUploadJob creates a new async CV processing job
+func (db *DB) CreateCVUploadJob(ctx context.Context, cvFileID int64) (int64, error) {
+    query := `
+        INSERT INTO cv_upload_jobs (cv_file_id, status, created_at)
+        VALUES ($1, 'pending', NOW())
+        RETURNING id
+    `
+    var jobID int64
+    err := db.connection.QueryRowContext(ctx, query, cvFileID).Scan(&jobID)
+    if err != nil {
+        return 0, err
+    }
+    
+    // Update cv_files with job_id
+    _, err = db.connection.ExecContext(ctx, `UPDATE cv_files SET job_id = $1 WHERE id = $2`, jobID, cvFileID)
+    if err != nil {
+        log.Printf("[DB] Warning: Failed to update cv_files.job_id: %v", err)
+    }
+    
+    return jobID, nil
+}
+
+// GetPendingJobs returns jobs in pending status
+func (db *DB) GetPendingJobs(ctx context.Context, limit int) ([]CVUploadJob, error) {
+    query := `
+        SELECT id, cv_file_id, status, error_message, progress, 
+               created_at, started_at, completed_at, retry_count, max_retries
+        FROM cv_upload_jobs
+        WHERE status = 'pending'
+        ORDER BY created_at ASC
+        LIMIT $1
+    `
+    rows, err := db.connection.QueryContext(ctx, query, limit)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+    
+    var jobs []CVUploadJob
+    for rows.Next() {
+        var job CVUploadJob
+        var progressJSON sql.NullString
+        
+        err := rows.Scan(
+            &job.ID, &job.CVFileID, &job.Status, &job.ErrorMessage,
+            &progressJSON, &job.CreatedAt, &job.StartedAt, &job.CompletedAt,
+            &job.RetryCount, &job.MaxRetries,
+        )
+        if err != nil {
+            log.Printf("[DB] Error scanning job: %v", err)
+            continue
+        }
+        
+        // Parse progress JSON (simple map for now)
+        job.Progress = make(map[string]interface{})
+        
+        jobs = append(jobs, job)
+    }
+    
+    return jobs, nil
+}
+
+// UpdateJobStatus updates job status and timestamps
+func (db *DB) UpdateJobStatus(ctx context.Context, jobID int64, status string, errorMsg *string) error {
+    var query string
+    var args []interface{}
+    
+    switch status {
+    case "processing":
+        query = `UPDATE cv_upload_jobs SET status = $1, started_at = NOW() WHERE id = $2`
+        args = []interface{}{status, jobID}
+    case "completed":
+        query = `UPDATE cv_upload_jobs SET status = $1, completed_at = NOW() WHERE id = $2`
+        args = []interface{}{status, jobID}
+    case "failed":
+        query = `UPDATE cv_upload_jobs SET status = $1, error_message = $2, completed_at = NOW() WHERE id = $3`
+        args = []interface{}{status, errorMsg, jobID}
+    default:
+        query = `UPDATE cv_upload_jobs SET status = $1 WHERE id = $2`
+        args = []interface{}{status, jobID}
+    }
+    
+    _, err := db.connection.ExecContext(ctx, query, args...)
+    return err
+}
+
+// GetJobByID retrieves a job by ID
+func (db *DB) GetJobByID(ctx context.Context, jobID int64) (*CVUploadJob, error) {
+    query := `
+        SELECT id, cv_file_id, status, error_message, progress,
+               created_at, started_at, completed_at, retry_count, max_retries
+        FROM cv_upload_jobs
+        WHERE id = $1
+    `
+    var job CVUploadJob
+    var progressJSON sql.NullString
+    
+    err := db.connection.QueryRowContext(ctx, query, jobID).Scan(
+        &job.ID, &job.CVFileID, &job.Status, &job.ErrorMessage,
+        &progressJSON, &job.CreatedAt, &job.StartedAt, &job.CompletedAt,
+        &job.RetryCount, &job.MaxRetries,
+    )
+    
+    if err == sql.ErrNoRows {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, err
+    }
+    
+    job.Progress = make(map[string]interface{})
+    
+    return &job, nil
+}
+
+// GetJobByCVFileID retrieves a job by CV file ID
+func (db *DB) GetJobByCVFileID(ctx context.Context, cvFileID int64) (*CVUploadJob, error) {
+    query := `
+        SELECT id, cv_file_id, status, error_message, progress,
+               created_at, started_at, completed_at, retry_count, max_retries
+        FROM cv_upload_jobs
+        WHERE cv_file_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+    `
+    var job CVUploadJob
+    var progressJSON sql.NullString
+    
+    err := db.connection.QueryRowContext(ctx, query, cvFileID).Scan(
+        &job.ID, &job.CVFileID, &job.Status, &job.ErrorMessage,
+        &progressJSON, &job.CreatedAt, &job.StartedAt, &job.CompletedAt,
+        &job.RetryCount, &job.MaxRetries,
+    )
+    
+    if err == sql.ErrNoRows {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, err
+    }
+    
+    job.Progress = make(map[string]interface{})
+    
+    return &job, nil
+}
+

@@ -2,14 +2,15 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
-
-	"cv-search/internal/llm"
 )
 
 // CVUploadHandler handles CV file uploads and extraction
@@ -61,121 +62,86 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("CV parsed: %s (%d bytes text)", parsedCV.Filename, len(parsedCV.FullText))
 
-	// Save CV file to database
-	cvID, err := a.db.SaveCVFile(r.Context(), nil, parsedCV.Filename,
-		parsedCV.Filename, parsedCV.FileType, parsedCV.FullText, parsedCV.FileSize)
+	// Calculate content hash for duplicate detection
+	hash := sha256.Sum256([]byte(parsedCV.FullText))
+	contentHash := hex.EncodeToString(hash[:])
+	log.Printf("[DUPLICATE CHECK] Content hash: %s (length: %d)", contentHash[:16], len(contentHash))
+
+	// Check if CV already exists
+	existingCV, err := a.db.FindCVByHash(r.Context(), contentHash)
+	if err != nil {
+		log.Printf("[DUPLICATE CHECK] Error checking for duplicate CV: %v", err)
+		// Continue with upload even if duplicate check fails
+	} else if existingCV != nil {
+		// CV already exists - return existing info
+		log.Printf("[DUPLICATE CHECK] Duplicate CV detected: %s (existing ID: %d)", parsedCV.Filename, existingCV.ID)
+		
+		response := map[string]interface{}{
+			"cv_id":              existingCV.ID,
+			"filename":           existingCV.Filename,
+			"file_size":          existingCV.FileSize,
+			"status":             "duplicate",
+			"message":            "This CV has already been uploaded",
+			"original_upload_at": existingCV.UploadedAt,
+			"duplicate":          true,
+		}
+		
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	// Save CV file to database with hash
+	log.Printf("[DUPLICATE CHECK] Saving CV with hash to database...")
+	cvID, err := a.db.SaveCVFileWithHash(r.Context(), nil, parsedCV.Filename,
+		parsedCV.Filename, parsedCV.FileType, parsedCV.FullText, parsedCV.FileSize, contentHash)
 	if err != nil {
 		log.Printf("Failed to save CV: %v", err)
 		http.Error(w, "failed to save CV", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("CV saved to database with ID: %d", cvID)
+	log.Printf("CV saved to database with ID: %d (hash: %s...)", cvID, contentHash[:16])
 
-	// Extract entities using LLM (if enabled)
-	var extraction *llm.CVExtraction
-	extractionMethod := "none"
-
-	if a.llmService != nil {
-		log.Println("Extracting entities using LLM...")
-		extractionMethod = "llm"
-
-		extraction, err = a.llmService.ExtractEntities(parsedCV.FullText)
-		if err != nil {
-			log.Printf("LLM extraction failed: %v", err)
-			// Don't fail the request, just log and continue
-			extractionMethod = "failed"
-		} else {
-			log.Printf("LLM extracted: %d skills, %d companies, %d education entries",
-				len(extraction.Skills), len(extraction.Companies), len(extraction.Education))
-
-			// Save extracted entities to cv_entities table
-			for _, skill := range extraction.Skills {
-				_ = a.db.SaveCVEntity(r.Context(), cvID, "skill", skill.Name, skill.Confidence)
-			}
-			for _, company := range extraction.Companies {
-				_ = a.db.SaveCVEntity(r.Context(), cvID, "company", company.Name, company.Confidence)
-			}
-			for _, edu := range extraction.Education {
-				_ = a.db.SaveCVEntity(r.Context(), cvID, "education", edu.Institution, 0.9)
-			}
-			for _, loc := range extraction.Locations {
-				_ = a.db.SaveCVEntity(r.Context(), cvID, "location", loc, 0.85)
-			}
-
-			// Build graph from extraction
-			if a.graphBuilder != nil {
-				log.Println("Building knowledge graph...")
-
-				// Convert extraction to map for graph builder
-				extractionMap := map[string]interface{}{
-					"candidate": map[string]interface{}{
-						"name":                   extraction.Candidate.Name,
-						"current_position":       extraction.Candidate.CurrentPosition,
-						"seniority":              extraction.Candidate.Seniority,
-						"total_experience_years": extraction.Candidate.TotalExperienceYears,
-					},
-					"skills":    extraction.Skills,
-					"companies": extraction.Companies,
-					"education": extraction.Education,
-				}
-
-				err = a.graphBuilder.BuildFromLLMExtraction(r.Context(), cvID, extractionMap)
-				if err != nil {
-					log.Printf("Graph building failed: %v", err)
-				} else {
-					log.Printf("Graph built successfully: %d skills, %d companies, %d education nodes",
-						len(extraction.Skills), len(extraction.Companies), len(extraction.Education))
-
-					// Queue background embedding job for newly created nodes
-					newNodeIDs := a.collectNewNodeIDs(r.Context(), int64(cvID))
-					if len(newNodeIDs) > 0 {
-						a.QueueEmbeddingJob(int64(cvID), newNodeIDs)
-						log.Printf("Queued %d nodes for background embedding", len(newNodeIDs))
-					}
-				}
-			}
-		}
+	// Create async processing job
+	jobID, err := a.db.CreateCVUploadJob(r.Context(), int64(cvID))
+	if err != nil {
+		log.Printf("Failed to create job: %v", err)
+		http.Error(w, "failed to create processing job", http.StatusInternalServerError)
+		return
 	}
+
+	log.Printf("Created job %d for CV %d", jobID, cvID)
+
+	// Queue job for background processing
+	a.queueCVProcessingJob(jobID, int64(cvID), parsedCV.FullText)
 
 	processingTime := time.Since(startTime).Milliseconds()
 
-	// Prepare response
+	// Return immediately with job info (async response)
 	response := map[string]interface{}{
 		"cv_id":              cvID,
+		"job_id":             jobID,
 		"filename":           parsedCV.Filename,
 		"file_type":          parsedCV.FileType,
 		"file_size":          parsedCV.FileSize,
 		"text_length":        len(parsedCV.FullText),
-		"extraction_method":  extractionMethod,
+		"status":             "pending",
+		"message":            "CV uploaded successfully. Processing in background.",
 		"processing_time_ms": processingTime,
+		"check_status_url":   fmt.Sprintf("/api/cv/job/%d", jobID),
 	}
 
-	if extraction != nil {
-		response["entities"] = map[string]interface{}{
-			"candidate": extraction.Candidate,
-			"skills":    extraction.Skills,
-			"companies": extraction.Companies,
-			"education": extraction.Education,
-			"locations": extraction.Locations,
-			"languages": extraction.Languages,
-		}
-		response["summary"] = map[string]int{
-			"skills_count":    len(extraction.Skills),
-			"companies_count": len(extraction.Companies),
-			"education_count": len(extraction.Education),
-		}
-	}
-
-	log.Printf("Sending response for CV %d (processing time: %dms)", cvID, processingTime)
+	log.Printf("CV upload complete - instant response in %dms (job %d queued for processing)", processingTime, jobID)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusAccepted) // 202 Accepted (async processing)
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("ERROR: Failed to encode JSON response: %v", err)
 	} else {
-		log.Printf("Response sent successfully for CV %d", cvID)
+		log.Printf("Response sent successfully for CV %d (job %d)", cvID, jobID)
 	}
 }
 
@@ -319,3 +285,77 @@ func (a *API) collectNewNodeIDs(ctx context.Context, cvID int64) []string {
 
 	return nodeIDs
 }
+
+// GetJobStatusHandler returns the status of a CV processing job
+// @Summary Get CV processing job status
+// @Description Get the current status of an async CV processing job
+// @Tags cv
+// @Produce json
+// @Param job_id path int true "Job ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 404 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Router /cv/job/{job_id} [get]
+func (a *API) GetJobStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract job_id from URL path
+	// Expected format: /api/cv/job/123
+	pathParts := strings.Split(r.URL.Path, "/")
+	if len(pathParts) < 5 {
+		http.Error(w, "invalid job ID", http.StatusBadRequest)
+		return
+	}
+
+	var jobID int64
+	_, err := fmt.Sscanf(pathParts[4], "%d", &jobID)
+	if err != nil {
+		http.Error(w, "invalid job ID format", http.StatusBadRequest)
+		return
+	}
+
+	// Get job from database
+	job, err := a.db.GetJobByID(r.Context(), jobID)
+	if err != nil {
+		log.Printf("Failed to get job %d: %v", jobID, err)
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+
+	if job == nil {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+
+	// Prepare response
+	response := map[string]interface{}{
+		"job_id":     job.ID,
+		"cv_file_id": job.CVFileID,
+		"status":     job.Status,
+		"created_at": job.CreatedAt,
+	}
+
+	if job.StartedAt != nil {
+		response["started_at"] = job.StartedAt
+	}
+	if job.CompletedAt != nil {
+		response["completed_at"] = job.CompletedAt
+	}
+	if job.ErrorMessage != nil {
+		response["error"] = *job.ErrorMessage
+	}
+	if job.Status == "completed" {
+		response["message"] = "CV processing completed successfully"
+	} else if job.Status == "processing" {
+		response["message"] = "CV processing in progress"
+	} else if job.Status == "pending" {
+		response["message"] = "CV processing queued"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
