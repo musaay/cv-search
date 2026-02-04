@@ -56,9 +56,6 @@ func NewGraphQuerier(db *sql.DB) *GraphQuerier {
 func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria) ([]CandidateResult, error) {
 	log.Printf("[GraphRAG] Querying graph with criteria: %+v", criteria)
 
-	// CRITICAL: Clear prepared statement cache before each query to avoid binding errors
-	q.db.Exec("DEALLOCATE ALL")
-
 	// Build SQL query dynamically based on criteria
 	query, args := q.buildQuery(criteria)
 
@@ -130,7 +127,7 @@ func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria)
 func (q *GraphQuerier) buildQuery(criteria *SearchCriteria) (string, []interface{}) {
 	// Add unique comment to prevent prepared statement cache collision
 	queryID := fmt.Sprintf("/* graphquery_%d */", time.Now().UnixNano())
-	
+
 	baseQuery := queryID + `
 		SELECT DISTINCT p.node_id, p.properties
 		FROM graph_nodes p

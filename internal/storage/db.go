@@ -28,7 +28,7 @@ func NewDB(dataSourceName string) (*DB, error) {
 	} else {
 		log.Printf("[DB] prefer_simple_protocol already in connection string")
 	}
-	
+
 	db, err := sql.Open("postgres", dataSourceName)
 	if err != nil {
 		return nil, err
@@ -36,9 +36,9 @@ func NewDB(dataSourceName string) (*DB, error) {
 
 	// Connection pool tuning
 	// Reduce pool size to minimize prepared statement cache collisions
-	db.SetMaxOpenConns(5)  // Reduced from 25
-	db.SetMaxIdleConns(2)  // Reduced from 10
-	db.SetConnMaxLifetime(1 * time.Minute) // Reduced from 5 minutes
+	db.SetMaxOpenConns(5)                   // Reduced from 25
+	db.SetMaxIdleConns(2)                   // Reduced from 10
+	db.SetConnMaxLifetime(1 * time.Minute)  // Reduced from 5 minutes
 	db.SetConnMaxIdleTime(30 * time.Second) // Force conn reset
 
 	if err := db.Ping(); err != nil {
