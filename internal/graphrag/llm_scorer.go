@@ -96,22 +96,25 @@ func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate
 5. Assign fit level: excellent/good/fair/poor
 
 **Scoring Guidelines:**
-- 90-100: Perfect match - Community match + senior experience (5+ years) in domain
-- 75-89: Excellent match - Community match OR direct job title match with good experience
-- 60-74: Good match - Related community/position with some experience
-- 40-59: Fair match - Some overlap in skills/experience
+- 90-100: Perfect match - Community match + senior experience (8+ years) in domain
+- 80-89: Strong match - Community match + solid experience (5-7 years)
+- 70-79: Good match - Community match + junior/mid experience (3-4 years) OR direct job title match with less community fit
+- 60-69: Acceptable match - Community match + very junior (1-2 years) OR related position without community match
+- 40-59: Fair match - Some overlap in skills/experience but weak community fit
 - 0-39: Poor match - Wrong domain and insufficient skills
 
 **Evaluation Criteria (in order of importance):**
 1. **Community Match:** Is the candidate in the right professional community for this role?
-2. **Years of Experience:** How much relevant experience do they have? (More experience = higher score when community matches)
+2. **Years of Experience:** How much relevant experience do they have? (THIS IS THE PRIMARY DIFFERENTIATOR when communities match!)
 3. **Job Title Match:** Does their current position match what's being searched?
 4. **Skill Relevance:** Do their skills match the job requirements?
 
-**IMPORTANT SCORING RULES:**
-- If two candidates are in the SAME community, the one with MORE years of experience should get a HIGHER score
-- Experience is the tiebreaker when community matches
-- Example: "Business Analyst" (analyst, 4 yrs) vs "Product Lead" (analyst, 12 yrs) → Product Lead should score higher due to more experience
+**CRITICAL SCORING RULES:**
+- **When candidates are in the SAME community, ALWAYS give higher score to the one with MORE years of experience**
+- Experience should create clear score separation (e.g., 12 yrs = 85-90, 4 yrs = 70-75, 3 yrs = 65-70)
+- Job title match is SECONDARY to experience when community matches
+- Example 1: "Product Lead" (analyst, 12 yrs) should score 85-90, "Business Analyst" (analyst, 4 yrs) should score 70-75
+- Example 2: "Product Owner & BA" (analyst, 3 yrs) should score 65-70, less than someone with 4+ years in same community
 
 **IMPORTANT:** Skills are listed with proficiency levels and years of experience (e.g., "Java (Expert, 13 yrs)"). 
 Pay close attention to CURRENT POSITION, COMMUNITY MEMBERSHIP, and years of experience when scoring.
@@ -135,8 +138,12 @@ Pay close attention to CURRENT POSITION, COMMUNITY MEMBERSHIP, and years of expe
 
 		// Format community scores
 		communityInfo := "No strong community match"
-		if len(c.Communities) > 0 {
-			communityInfo = fmt.Sprintf("Primary: %s, All communities: %v", c.Community, c.Communities)
+		if c.Community != "" {
+			if len(c.Communities) > 0 {
+				communityInfo = fmt.Sprintf("Primary: %s, All communities: %v", c.Community, c.Communities)
+			} else {
+				communityInfo = fmt.Sprintf("Primary: %s", c.Community)
+			}
 		}
 
 		prompt += fmt.Sprintf(`

@@ -587,8 +587,9 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 	}
 
 	// Assign communities (after skills are loaded)
+	// Only compute if not already set from database
 	for i := range candidates {
-		if len(candidates[i].Skills) > 0 {
+		if candidates[i].Community == "" && len(candidates[i].Skills) > 0 {
 			primary, communities, scores := FindCommunities(candidates[i].Skills, 0.3)
 			candidates[i].Community = primary
 			candidates[i].Communities = communities

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -27,6 +28,11 @@ type BM25Result struct {
 // Search performs BM25-style full-text search
 // Returns top N candidates sorted by relevance
 func (b *BM25Searcher) Search(ctx context.Context, query string, limit int) ([]BM25Result, error) {
+	// Clear any cached prepared statements to avoid binding errors
+	if _, err := b.db.ExecContext(ctx, "DEALLOCATE ALL"); err != nil {
+		log.Printf("[BM25Search] Warning: DEALLOCATE ALL failed: %v", err)
+	}
+
 	// Convert query to tsquery format
 	// "Go developer" -> "Go & developer"
 	tsQuery := prepareTSQuery(query)
