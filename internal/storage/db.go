@@ -24,6 +24,9 @@ func NewDB(dataSourceName string) (*DB, error) {
 			separator = "&"
 		}
 		dataSourceName = dataSourceName + separator + "prefer_simple_protocol=true"
+		log.Printf("[DB] Added prefer_simple_protocol to connection string")
+	} else {
+		log.Printf("[DB] prefer_simple_protocol already in connection string")
 	}
 	
 	db, err := sql.Open("postgres", dataSourceName)
