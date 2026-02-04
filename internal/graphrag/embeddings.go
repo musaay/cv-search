@@ -208,6 +208,9 @@ func (s *EmbeddingService) BatchEmbedAllNodes(ctx context.Context) error {
 
 // SimilaritySearch finds similar nodes using vector similarity
 func (s *EmbeddingService) SimilaritySearch(ctx context.Context, queryText string, topK int) ([]string, []float64, error) {
+	// Clear prepared statement cache to prevent binding errors
+	s.db.Exec("DEALLOCATE ALL")
+	
 	// Generate query embedding
 	queryEmbedding, err := s.GenerateEmbedding(ctx, queryText)
 	if err != nil {
@@ -227,7 +230,7 @@ func (s *EmbeddingService) SimilaritySearch(ctx context.Context, queryText strin
 		ORDER BY similarity ASC
 		LIMIT $2
 	`
-
+	
 	rows, err := s.db.QueryContext(ctx, query, embeddingJSON, topK)
 	if err != nil {
 		return nil, nil, err

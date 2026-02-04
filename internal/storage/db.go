@@ -329,6 +329,9 @@ func (db *DB) UpdateJobStatus(ctx context.Context, jobID int64, status string, e
 
 // GetJobByID retrieves a job by ID
 func (db *DB) GetJobByID(ctx context.Context, jobID int64) (*CVUploadJob, error) {
+	// Clear prepared statement cache to prevent binding errors
+	db.connection.Exec("DEALLOCATE ALL")
+	
 	query := `
         SELECT id, cv_file_id, status, error_message, progress,
                created_at, started_at, completed_at, retry_count, max_retries
