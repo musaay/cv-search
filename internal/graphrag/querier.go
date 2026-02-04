@@ -56,14 +56,16 @@ func NewGraphQuerier(db *sql.DB) *GraphQuerier {
 func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria) ([]CandidateResult, error) {
 	log.Printf("[GraphRAG] Querying graph with criteria: %+v", criteria)
 
+	// CRITICAL: Clear prepared statement cache before each query to avoid binding errors
+	q.db.Exec("DEALLOCATE ALL")
+
 	// Build SQL query dynamically based on criteria
 	query, args := q.buildQuery(criteria)
 
 	log.Printf("[GraphRAG] Executing SQL: %s", query)
 	log.Printf("[GraphRAG] With args: %v", args)
 
-	// CRITICAL FIX: Use db.Query instead of db.QueryContext to avoid prepared statement cache
-	// This prevents "bind message supplies X parameters but requires Y" error
+	// Use db.Query (non-context) to avoid prepared statement reuse
 	rows, err := q.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("graph query failed: %w", err)

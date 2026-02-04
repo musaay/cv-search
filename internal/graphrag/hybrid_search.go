@@ -104,6 +104,9 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 
 	// Vector search
 	go func() {
+		// Clear prepared statement cache to avoid binding errors
+		h.db.Exec("DEALLOCATE ALL")
+		
 		personIDs, similarities, err := h.embeddingService.SimilaritySearch(ctx, query, config.TopK)
 		if err != nil {
 			errChan <- fmt.Errorf("vector failed: %w", err)
