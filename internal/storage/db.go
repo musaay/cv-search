@@ -35,9 +35,11 @@ func NewDB(dataSourceName string) (*DB, error) {
 	}
 
 	// Connection pool tuning
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(10)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	// Reduce pool size to minimize prepared statement cache collisions
+	db.SetMaxOpenConns(5)  // Reduced from 25
+	db.SetMaxIdleConns(2)  // Reduced from 10
+	db.SetConnMaxLifetime(1 * time.Minute) // Reduced from 5 minutes
+	db.SetConnMaxIdleTime(30 * time.Second) // Force conn reset
 
 	if err := db.Ping(); err != nil {
 		return nil, err
