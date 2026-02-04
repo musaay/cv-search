@@ -127,13 +127,13 @@ Pay close attention to CURRENT POSITION, COMMUNITY MEMBERSHIP, and years of expe
 	for i, c := range candidates {
 		skills := skillNames(c.Skills)
 		companies := companyNames(c.Companies)
-		
+
 		// Format community scores
 		communityInfo := "No strong community match"
 		if len(c.Communities) > 0 {
 			communityInfo = fmt.Sprintf("Primary: %s, All communities: %v", c.Community, c.Communities)
 		}
-		
+
 		prompt += fmt.Sprintf(`
 ---
 Candidate %d:

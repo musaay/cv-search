@@ -18,7 +18,7 @@ type DB struct {
 func NewDB(dataSourceName string) (*DB, error) {
 	// Note: We use DEALLOCATE ALL in query methods to prevent prepared statement cache collisions
 	// instead of prefer_simple_protocol which is not supported by lib/pq driver
-	
+
 	db, err := sql.Open("postgres", dataSourceName)
 	if err != nil {
 		return nil, err

@@ -463,6 +463,18 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 		if exp, ok := props["total_experience_years"].(float64); ok {
 			candidates[idx].TotalExperienceYears = int(exp)
 		}
+		if comm, ok := props["community"].(string); ok {
+			candidates[idx].Community = comm
+		}
+		if communities, ok := props["communities"].([]interface{}); ok {
+			commList := make([]string, 0, len(communities))
+			for _, c := range communities {
+				if commStr, ok := c.(string); ok {
+					commList = append(commList, commStr)
+				}
+			}
+			candidates[idx].Communities = commList
+		}
 	}
 
 	// BATCH 2: Load all skills in one query
