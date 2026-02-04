@@ -96,14 +96,29 @@ func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate
 5. Assign fit level: excellent/good/fair/poor
 
 **Scoring Guidelines:**
-- 90-100: Perfect match (exceeds requirements)
-- 75-89: Excellent match (meets all requirements)
-- 60-74: Good match (meets most requirements)
-- 40-59: Fair match (meets some requirements)
-- 0-39: Poor match (doesn't meet requirements)
+- 90-100: Perfect match - Position & community match perfectly
+- 75-89: Excellent match - Position OR community matches strongly
+- 60-74: Good match - Related position/community OR strong transferable skills
+- 40-59: Fair match - Some overlap in skills/experience
+- 0-39: Poor match - Wrong domain and insufficient skills
+
+**Evaluation Criteria (in order of importance):**
+1. **Community Match:** Is the candidate in the right professional community for this role?
+2. **Job Title Match:** Does their current position match what's being searched?
+3. **Years of Experience:** Do they have enough experience in relevant skills?
+4. **Skill Relevance:** Do their skills match the job requirements?
 
 **IMPORTANT:** Skills are listed with proficiency levels and years of experience (e.g., "Java (Expert, 13 yrs)"). 
-Pay close attention to years of experience when scoring - more years in relevant skills should result in higher scores.
+Pay close attention to CURRENT POSITION, COMMUNITY MEMBERSHIP, and years of experience when scoring.
+
+**Community Definitions:**
+- "analyst": Business Analysts, Product Owners, Product Managers, Data Analysts
+- "backend": Backend Developers, API Engineers, Microservices Engineers
+- "frontend": Frontend Developers, UI Engineers, React/Vue developers
+- "mobile": iOS/Android developers, React Native developers
+- "data": Data Engineers, Data Scientists, ML Engineers
+- "devops": DevOps Engineers, SRE, Infrastructure Engineers
+- "qa-test": QA Engineers, Test Automation Engineers
 
 **Candidates:**
 `, query)
@@ -112,21 +127,28 @@ Pay close attention to years of experience when scoring - more years in relevant
 	for i, c := range candidates {
 		skills := skillNames(c.Skills)
 		companies := companyNames(c.Companies)
+		
+		// Format community scores
+		communityInfo := "No strong community match"
+		if len(c.Communities) > 0 {
+			communityInfo = fmt.Sprintf("Primary: %s, All communities: %v", c.Community, c.Communities)
+		}
+		
 		prompt += fmt.Sprintf(`
 ---
 Candidate %d:
 - Person ID: %s
 - Name: %s
-- Current Position: %s
-- Seniority: %s
-- Skills: %v
-- Companies: %v
-- Fusion Score: %.2f (BM25=%.2f, Vector=%.2f, Graph=%.2f)
-- Rank from Fusion: #%d
+- **CURRENT POSITION: %s** (This is their actual job title - very important for matching!)
+- **COMMUNITY MEMBERSHIP: %s** (Shows their professional domain - VERY important!)
+- Seniority: %s (%d years total experience)
+- Top Skills: %v
+- Work History: %v
+- Fusion Score: %.2f (Pre-LLM ranking: #%d)
 
-`, i+1, c.PersonID, c.Name, c.CurrentPosition, c.Seniority,
+`, i+1, c.PersonID, c.Name, c.CurrentPosition, communityInfo, c.Seniority, c.TotalExperienceYears,
 			skills, companies,
-			c.FusionScore, c.BM25Score, c.VectorScore, c.GraphScore, c.Rank)
+			c.FusionScore, c.Rank)
 	}
 
 	prompt += `

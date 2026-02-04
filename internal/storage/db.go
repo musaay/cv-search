@@ -16,19 +16,9 @@ type DB struct {
 }
 
 func NewDB(dataSourceName string) (*DB, error) {
-	// Disable prepared statement cache to avoid parameter binding errors with dynamic queries
-	// Add prefer_simple_protocol=true to connection string if not present
-	if !strings.Contains(dataSourceName, "prefer_simple_protocol") {
-		separator := "?"
-		if strings.Contains(dataSourceName, "?") {
-			separator = "&"
-		}
-		dataSourceName = dataSourceName + separator + "prefer_simple_protocol=true"
-		log.Printf("[DB] Added prefer_simple_protocol to connection string")
-	} else {
-		log.Printf("[DB] prefer_simple_protocol already in connection string")
-	}
-
+	// Note: We use DEALLOCATE ALL in query methods to prevent prepared statement cache collisions
+	// instead of prefer_simple_protocol which is not supported by lib/pq driver
+	
 	db, err := sql.Open("postgres", dataSourceName)
 	if err != nil {
 		return nil, err
@@ -331,7 +321,7 @@ func (db *DB) UpdateJobStatus(ctx context.Context, jobID int64, status string, e
 func (db *DB) GetJobByID(ctx context.Context, jobID int64) (*CVUploadJob, error) {
 	// Clear prepared statement cache to prevent binding errors
 	db.connection.Exec("DEALLOCATE ALL")
-	
+
 	query := `
         SELECT id, cv_file_id, status, error_message, progress,
                created_at, started_at, completed_at, retry_count, max_retries
