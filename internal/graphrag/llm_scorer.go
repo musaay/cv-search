@@ -96,17 +96,22 @@ func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate
 5. Assign fit level: excellent/good/fair/poor
 
 **Scoring Guidelines:**
-- 90-100: Perfect match - Position & community match perfectly
-- 75-89: Excellent match - Position OR community matches strongly
-- 60-74: Good match - Related position/community OR strong transferable skills
+- 90-100: Perfect match - Community match + senior experience (5+ years) in domain
+- 75-89: Excellent match - Community match OR direct job title match with good experience
+- 60-74: Good match - Related community/position with some experience
 - 40-59: Fair match - Some overlap in skills/experience
 - 0-39: Poor match - Wrong domain and insufficient skills
 
 **Evaluation Criteria (in order of importance):**
 1. **Community Match:** Is the candidate in the right professional community for this role?
-2. **Job Title Match:** Does their current position match what's being searched?
-3. **Years of Experience:** Do they have enough experience in relevant skills?
+2. **Years of Experience:** How much relevant experience do they have? (More experience = higher score when community matches)
+3. **Job Title Match:** Does their current position match what's being searched?
 4. **Skill Relevance:** Do their skills match the job requirements?
+
+**IMPORTANT SCORING RULES:**
+- If two candidates are in the SAME community, the one with MORE years of experience should get a HIGHER score
+- Experience is the tiebreaker when community matches
+- Example: "Business Analyst" (analyst, 4 yrs) vs "Product Lead" (analyst, 12 yrs) → Product Lead should score higher due to more experience
 
 **IMPORTANT:** Skills are listed with proficiency levels and years of experience (e.g., "Java (Expert, 13 yrs)"). 
 Pay close attention to CURRENT POSITION, COMMUNITY MEMBERSHIP, and years of experience when scoring.
