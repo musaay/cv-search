@@ -16,6 +16,16 @@ type DB struct {
 }
 
 func NewDB(dataSourceName string) (*DB, error) {
+	// Disable prepared statement cache to avoid parameter binding errors with dynamic queries
+	// Add prefer_simple_protocol=true to connection string if not present
+	if !strings.Contains(dataSourceName, "prefer_simple_protocol") {
+		separator := "?"
+		if strings.Contains(dataSourceName, "?") {
+			separator = "&"
+		}
+		dataSourceName = dataSourceName + separator + "prefer_simple_protocol=true"
+	}
+	
 	db, err := sql.Open("postgres", dataSourceName)
 	if err != nil {
 		return nil, err

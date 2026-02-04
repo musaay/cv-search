@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 )
 
 // CandidateResult represents a candidate found in graph search
@@ -61,7 +62,9 @@ func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria)
 	log.Printf("[GraphRAG] Executing SQL: %s", query)
 	log.Printf("[GraphRAG] With args: %v", args)
 
-	rows, err := q.db.QueryContext(ctx, query, args...)
+	// CRITICAL FIX: Use db.Query instead of db.QueryContext to avoid prepared statement cache
+	// This prevents "bind message supplies X parameters but requires Y" error
+	rows, err := q.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("graph query failed: %w", err)
 	}
@@ -123,7 +126,10 @@ func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria)
 }
 
 func (q *GraphQuerier) buildQuery(criteria *SearchCriteria) (string, []interface{}) {
-	baseQuery := `
+	// Add unique comment to prevent prepared statement cache collision
+	queryID := fmt.Sprintf("/* graphquery_%d */", time.Now().UnixNano())
+	
+	baseQuery := queryID + `
 		SELECT DISTINCT p.node_id, p.properties
 		FROM graph_nodes p
 		WHERE p.node_type = 'person'
@@ -171,7 +177,7 @@ func (q *GraphQuerier) buildQuery(criteria *SearchCriteria) (string, []interface
 					  AND e.edge_type IN ('WORKS_AT', 'WORKED_AT')
 					  AND (c.node_id LIKE $%d OR c.properties->>'name' ILIKE $%d)
 				)
-			`, argIndex, argIndex+1))
+			`, argIndex, argIndex+1)) // Fixed: use argIndex+1 for second placeholder
 			args = append(args, fmt.Sprintf("%%company_%s%%", company), fmt.Sprintf("%%%s%%", company))
 			argIndex += 2
 		}

@@ -86,7 +86,7 @@ func (c *LLMCache) generateKey(query string, candidateIDs []string) string {
 	sorted := make([]string, len(candidateIDs))
 	copy(sorted, candidateIDs)
 	sort.Strings(sorted)
-	
+
 	// Combine query + sorted candidate IDs
 	data := query
 	for _, id := range sorted {
