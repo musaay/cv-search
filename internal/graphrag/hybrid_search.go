@@ -72,9 +72,9 @@ type HybridSearchConfig struct {
 
 func DefaultHybridConfig() HybridSearchConfig {
 	return HybridSearchConfig{
-		BM25Weight:         0.3,
-		VectorWeight:       0.4,
-		GraphWeight:        0.3,
+		BM25Weight:         0.0, // BM25 disabled (candidates table not used)
+		VectorWeight:       0.6, // Increased from 0.4
+		GraphWeight:        0.4, // Increased from 0.3
 		TopK:               100,
 		FinalTopN:          0, // 0 = no limit, send all candidates to LLM
 		UseCommunityFilter: false,

@@ -3,17 +3,18 @@
 ## Overview
 
 The Hybrid Search API implements a **multi-stage retrieval and ranking system** that combines:
-1. **BM25 Full-Text Search** (keyword matching)
-2. **Vector Similarity Search** (semantic embeddings)
-3. **Graph Traversal** (relationship-based)
-4. **Pure LLM Reranking** (intelligent scoring)
+1. **~~BM25 Full-Text Search~~** (disabled - candidates table not used)
+2. **Vector Similarity Search** (semantic embeddings) - **60% weight**
+3. **Graph Traversal** (relationship-based) - **40% weight**
+4. **Pure LLM Reranking** (intelligent scoring with GPT-4)
 
 ### Key Design Principles
 
 ✅ **No local heuristic scoring** - All final ranking done by LLM  
-✅ **Reciprocal Rank Fusion (RRF)** - Industry-standard score fusion  
+✅ **Graph-native architecture** - All data in knowledge graph  
+✅ **Community-aware scoring** - Candidates grouped by professional domain  
+✅ **Experience prioritization** - Senior candidates ranked higher within same community  
 ✅ **Learning-ready** - All scores logged for future ML training  
-✅ **Configurable weights** - Tune BM25/Vector/Graph balance per use case
 
 ---
 
@@ -25,25 +26,28 @@ The Hybrid Search API implements a **multi-stage retrieval and ranking system** 
 └─────────────────────────────────────────────────────────────┘
 
 Step 1: MULTI-SOURCE RETRIEVAL (Parallel)
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│  BM25       │  │  Vector     │  │  Graph      │
-│  Search     │  │  Search     │  │  Traversal  │
-│  (TopK)     │  │  (TopK)     │  │  (TopK)     │
-└──────┬──────┘  └──────┬──────┘  └──────┬──────┘
-       │                │                │
-       └────────────────┴────────────────┘
-                       ▼
-Step 2: RECIPROCAL RANK FUSION
+┌─────────────┐  ┌─────────────┐
+│  Vector     │  │  Graph      │
+│  Search     │  │  Traversal  │
+│  (TopK=100) │  │  (TopK=100) │
+└──────┬──────┘  └──────┬──────┘
+       │                │
+       └────────────────┘
+                ▼
+Step 2: WEIGHTED FUSION
 ┌──────────────────────────────────────────┐
 │ • Normalize scores (0-1)                 │
 │ • Apply RRF: 1/(k+rank)                  │
 │ • Weighted fusion:                       │
-│   score = 0.3*BM25 + 0.4*Vector + 0.3*Graph │
+│   score = 0.6*Vector + 0.4*Graph         │
+│   (BM25 disabled: weight=0.0)            │
 └──────────────────┬───────────────────────┘
                    ▼
-Step 3: TOP-N SELECTION
+Step 3: ENRICHMENT & FILTERING
 ┌──────────────────────────────────────────┐
-│ Select top 50 candidates for LLM        │
+│ • Batch load: skills, companies, etc.   │
+│ • Community detection (if not in DB)    │
+│ • Optional community filtering          │
 └──────────────────┬───────────────────────┘
                    ▼
 Step 4: PURE LLM SCORING ⭐
@@ -93,21 +97,21 @@ Performs hybrid search with configurable fusion weights.
       "bm25_score": 0.85,
       "vector_score": 0.92,
       "graph_score": 0.78,
-      "fusion_score": 0.87,
-      "llm_score": 95.0,
-      "llm_reasoning": "Exceptional match: 8+ years Go, architect at major bank, led microservices migration",
+      "fusion_score": 0.42,
+      "llm_score": 92.0,
+      "llm_reasoning": "Exceptional match: 13 years experience as Senior Software Architect, extensive Java and microservices expertise in backend community",
       "rank": 1
     }
   ],
-  "total_found": 15,
-  "processing_time": "4.2s",
+  "total_found": 10,
+  "processing_time": "3.8s",
   "method": "hybrid_fusion_llm",
   "config": {
-    "bm25_weight": 0.3,
-    "vector_weight": 0.4,
-    "graph_weight": 0.3,
+    "bm25_weight": 0.0,
+    "vector_weight": 0.6,
+    "graph_weight": 0.4,
     "top_k": 100,
-    "final_top_n": 50
+    "final_top_n": 0
   }
 }
 ```
@@ -116,34 +120,34 @@ Performs hybrid search with configurable fusion weights.
 
 ## Score Breakdown
 
-### 1. BM25 Score (0-1)
-- **What**: Keyword-based relevance
-- **How**: PostgreSQL `ts_rank` on skills, experience, location
-- **Weight**: Default 30%
-- **Use Case**: When query has specific technical terms
+### 1. ~~BM25 Score~~ (DISABLED)
+- **Status**: Weight set to 0.0
+- **Reason**: `candidates` table not used - all data in graph
+- **Future**: Can be re-enabled if candidates table is populated
 
 ### 2. Vector Score (0-1)
-- **What**: Semantic similarity
+- **What**: Semantic similarity via embeddings
 - **How**: Cosine similarity between query embedding and candidate embedding
-- **Model**: OpenAI `text-embedding-3-small` (768 dim)
-- **Weight**: Default 40%
-- **Use Case**: When query is conceptual ("team player", "startup experience")
+- **Model**: OpenAI `text-embedding-3-small` (1536 dim)
+- **Weight**: **60%** (increased from 40%)
+- **Use Case**: Understanding semantic meaning, handling Türkçe/English mixed queries
 
 ### 3. Graph Score (0-1)
-- **What**: Relationship-based matching
-- **How**: Skill overlap, company networks, education connections
-- **Weight**: Default 30%
-- **Use Case**: When looking for specific career paths
+- **What**: Relationship-based matching from knowledge graph
+- **How**: Skill overlap, company networks, position matching, community membership
+- **Weight**: **40%** (increased from 30%)
+- **Use Case**: Specific career paths, community-based filtering
 
 ### 4. Fusion Score (0-1)
 - **Formula**: 
   ```
-  fusion_score = (bm25 * 0.3) + (vector * 0.4) + (graph * 0.3)
+  fusion_score = (vector * 0.6) + (graph * 0.4)
   ```
-- **RRF Component**: Each score also includes `1/(60+rank)` for rank-based fusion
+- **RRF Component**: Each score includes `1/(60+rank)` for rank-based fusion
+- **Purpose**: Initial candidate ordering before LLM reranking
 
 ### 5. LLM Score (0-100) ⭐ FINAL RANKING
-- **What**: Pure LLM-based intelligent scoring
+- **What**: GPT-4 based intelligent scoring with community awareness
 - **How**: LLM evaluates features with no hard-coded rules
 - **Returns**: score + confidence + reasoning + evidence
 - **Guidelines**:

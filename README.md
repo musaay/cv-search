@@ -81,7 +81,7 @@ Bu proje, Microsoft'un GraphRAG (Graph Retrieval-Augmented Generation) metodoloj
 - 📄 **Async CV Upload** - Instant response (11ms), background LLM processing (318x faster)
 - 🔍 **Duplicate Detection** - SHA-256 content hashing prevents duplicate CVs
 - 🧠 **GraphRAG Search** - Knowledge graph-based semantic search
-- ⚡ **Hybrid Search Engine** - BM25 + Vector + Graph + LLM fusion
+- ⚡ **Hybrid Search Engine** - Vector (60%) + Graph (40%) + LLM fusion
 - 🎯 **Pure LLM Ranking** - No heuristics, only AI-powered candidate scoring
 - 💾 **Smart Caching** - Reduced API costs with intelligent result caching
 - 📊 **Job Status Tracking** - Monitor async CV processing progress
@@ -103,19 +103,19 @@ Bu proje, Microsoft'un GraphRAG (Graph Retrieval-Augmented Generation) metodoloj
 ### Search Methods
 
 #### 1. **Hybrid Search** (Recommended)
-Combines 3 retrieval methods with LLM reranking:
-- **BM25**: Keyword-based full-text search (PostgreSQL tsvector)
-- **Vector**: Semantic similarity (OpenAI embeddings + pgvector)
-- **Graph**: Relationship traversal (skills, companies, education)
-- **LLM Scoring**: GPT-4o-mini or Llama-3.3-70b for final ranking
+Combines vector + graph retrieval with LLM reranking:
+- **Vector**: Semantic similarity (OpenAI embeddings + pgvector) - **60% weight**
+- **Graph**: Relationship traversal (skills, companies, education) - **40% weight**
+- **LLM Scoring**: GPT-4o-mini for intelligent candidate ranking
+- ~~**BM25**: Disabled (candidates table not populated)~~ - **0% weight**
 
 ```bash
 POST /api/search/hybrid
 {
   "query": "Senior Java developer with banking experience",
-  "bm25_weight": 0.3,
-  "vector_weight": 0.4,
-  "graph_weight": 0.3,
+  "bm25_weight": 0.0,
+  "vector_weight": 0.6,
+  "graph_weight": 0.4,
   "final_top_n": 10
 }
 ```
@@ -132,10 +132,9 @@ Pure vector similarity with LLM enhancement
 |----------|-----------|
 | **Backend** | Go 1.24+ |
 | **Database** | PostgreSQL 16+ with pgvector |
-| **Vector Store** | pgvector (768-dim OpenAI embeddings) |
-| **LLM Providers** | OpenAI (GPT-4o-mini), Groq (Llama-3.3-70b) |
+| **Vector Store** | pgvector (1536-dim OpenAI embeddings) |
+| **LLM Providers** | OpenAI (GPT-4o-mini) |
 | **Graph** | Custom Knowledge Graph (PostgreSQL) |
-| **Full-Text** | PostgreSQL tsvector (BM25-style) |
 | **API Docs** | Swagger/OpenAPI |
 
 ## 🛠️ Installation
@@ -270,33 +269,37 @@ GROQ_API_KEY=gsk_...
 ```
 
 ### Hybrid Search Weights
-Customize retrieval weights:
+Current configuration (BM25 disabled):
 ```json
 {
-  "bm25_weight": 0.3,    // Keyword matching
-  "vector_weight": 0.4,   // Semantic similarity
-  "graph_weight": 0.3     // Relationship strength
+  "bm25_weight": 0.0,     // Disabled (candidates table not used)
+  "vector_weight": 0.6,   // Semantic similarity - PRIMARY
+  "graph_weight": 0.4     // Relationship strength - SECONDARY
 }
 ```
+
+**Note**: BM25 is disabled because the `candidates` table is not populated in the current architecture. All data flows through the graph (`graph_nodes`, `graph_edges`). BM25 can be re-enabled if the candidates table is populated.
 
 ## 📊 Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                   Hybrid Search Engine                  │
-├─────────────┬─────────────┬─────────────┬──────────────┤
-│   BM25      │   Vector    │   Graph     │   LLM        │
-│  (Keyword)  │ (Semantic)  │ (Relations) │  (Scoring)   │
-└─────────────┴─────────────┴─────────────┴──────────────┘
-      │              │              │              │
-      ├──────────────┴──────────────┴──────────────┤
-      │        Reciprocal Rank Fusion (RRF)        │
-      └────────────────────┬───────────────────────┘
-                           │
-                    ┌──────▼──────┐
-                    │  LLM Scorer │
-                    │  (GPT-4o)   │
-                    └─────────────┘
+│           Hybrid Search Engine (Vector + Graph)         │
+├─────────────────────┬───────────────────┬───────────────┤
+│      Vector (60%)   │    Graph (40%)    │  LLM Scoring  │
+│     (Semantic)      │    (Relations)    │   (Final)     │
+└─────────────────────┴───────────────────┴───────────────┘
+             │                   │                │
+             ├───────────────────┴────────────────┤
+             │   Reciprocal Rank Fusion (RRF)     │
+             └────────────────┬───────────────────┘
+                              │
+                       ┌──────▼──────┐
+                       │  LLM Scorer │
+                       │ (GPT-4o-mini)│
+                       └─────────────┘
+                       
+Note: BM25 disabled (candidates table not used)
 ```
 
 ## 📈 Performance
