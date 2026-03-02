@@ -33,9 +33,9 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	startTime := time.Now()
 
-	// Parse multipart form (max 10MB)
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		http.Error(w, "file too large or invalid (max 10MB)", http.StatusBadRequest)
+	// Parse multipart form (max 1MB)
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		http.Error(w, "file too large or invalid (max 1MB)", http.StatusBadRequest)
 		return
 	}
 
@@ -45,6 +45,12 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+
+	// Enforce 1 MB per-file limit
+	if header.Size > 1<<20 {
+		http.Error(w, "file too large (max 1 MB)", http.StatusBadRequest)
+		return
+	}
 
 	// Validate file type
 	ext := filepath.Ext(header.Filename)
@@ -115,7 +121,10 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Created job %d for CV %d", jobID, cvID)
 
 	// Queue job for background processing
-	a.queueCVProcessingJob(jobID, int64(cvID), parsedCV.FullText)
+	if !a.queueCVProcessingJob(jobID, int64(cvID), parsedCV.FullText) {
+		http.Error(w, "processing queue is full, try again later", http.StatusServiceUnavailable)
+		return
+	}
 
 	processingTime := time.Since(startTime).Milliseconds()
 
@@ -357,4 +366,224 @@ func (a *API) GetJobStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// BulkCVUploadHandler handles bulk CV file uploads (up to 10 files, 1 MB each).
+// @Summary Bulk upload CVs
+// @Description Upload multiple CV files at once (max 10 files, 1 MB each, 10 MB total)
+// @Tags cv
+// @Accept multipart/form-data
+// @Produce json
+// @Param files formData file true "CV files (PDF, DOCX, TXT) — field name: files"
+// @Success 207 {object} map[string]interface{}
+// @Failure 400 {object} map[string]string
+// @Router /cv/bulk-upload [post]
+func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		http.Error(w, "request too large (max 10 MB total)", http.StatusBadRequest)
+		return
+	}
+
+	files := r.MultipartForm.File["files"]
+	if len(files) == 0 {
+		http.Error(w, "no files uploaded (use field name: files)", http.StatusBadRequest)
+		return
+	}
+	if len(files) > 10 {
+		http.Error(w, "max 10 files per request", http.StatusBadRequest)
+		return
+	}
+
+	type FileResult struct {
+		Filename       string `json:"filename"`
+		CVID           *int64 `json:"cv_id,omitempty"`
+		JobID          *int64 `json:"job_id,omitempty"`
+		Status         string `json:"status"`
+		CheckStatusURL string `json:"check_status_url,omitempty"`
+	}
+
+	batchID := fmt.Sprintf("batch_%d", time.Now().UnixNano())
+	results := make([]FileResult, 0, len(files))
+	var batchJobs []BatchJob
+	queued, skipped := 0, 0
+
+	for _, fileHeader := range files {
+		res := FileResult{Filename: fileHeader.Filename}
+
+		// Per-file size limit: 1 MB
+		if fileHeader.Size > 1<<20 {
+			res.Status = "too_large"
+			skipped++
+			results = append(results, res)
+			continue
+		}
+
+		// File type validation
+		ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+		if ext != ".pdf" && ext != ".docx" && ext != ".doc" && ext != ".txt" {
+			res.Status = "invalid_type"
+			skipped++
+			results = append(results, res)
+			continue
+		}
+
+		file, err := fileHeader.Open()
+		if err != nil {
+			log.Printf("[BulkUpload] Cannot open %s: %v", fileHeader.Filename, err)
+			res.Status = "error"
+			skipped++
+			results = append(results, res)
+			continue
+		}
+
+		parsedCV, err := a.cvParser.ParseFile(fileHeader.Filename, file)
+		file.Close()
+		if err != nil {
+			log.Printf("[BulkUpload] Parse error %s: %v", fileHeader.Filename, err)
+			res.Status = "error"
+			skipped++
+			results = append(results, res)
+			continue
+		}
+
+		// Hash-based duplicate detection
+		hash := sha256.Sum256([]byte(parsedCV.FullText))
+		contentHash := hex.EncodeToString(hash[:])
+
+		existing, _ := a.db.FindCVByHash(r.Context(), contentHash)
+		if existing != nil {
+			cvID := int64(existing.ID)
+			res.CVID = &cvID
+			res.Status = "duplicate"
+			skipped++
+			results = append(results, res)
+			continue
+		}
+
+		cvID, err := a.db.SaveCVFileWithHash(r.Context(), nil, parsedCV.Filename,
+			parsedCV.Filename, parsedCV.FileType, parsedCV.FullText, parsedCV.FileSize, contentHash)
+		if err != nil {
+			log.Printf("[BulkUpload] DB save error %s: %v", fileHeader.Filename, err)
+			res.Status = "error"
+			skipped++
+			results = append(results, res)
+			continue
+		}
+
+		jobID, err := a.db.CreateCVUploadJob(r.Context(), int64(cvID))
+		if err != nil {
+			log.Printf("[BulkUpload] Job create error %s: %v", fileHeader.Filename, err)
+			res.Status = "error"
+			skipped++
+			results = append(results, res)
+			continue
+		}
+
+		if !a.queueCVProcessingJob(jobID, int64(cvID), parsedCV.FullText) {
+			res.Status = "queue_full"
+			skipped++
+			results = append(results, res)
+			continue
+		}
+
+		cvIDVal := int64(cvID)
+		res.CVID = &cvIDVal
+		res.JobID = &jobID
+		res.Status = "queued"
+		res.CheckStatusURL = fmt.Sprintf("/api/cv/job/%d", jobID)
+		queued++
+		batchJobs = append(batchJobs, BatchJob{JobID: jobID, Filename: fileHeader.Filename, CVID: int64(cvID)})
+		results = append(results, res)
+	}
+
+	// Persist batch to in-memory store
+	a.batchStore.set(&BatchEntry{
+		BatchID:   batchID,
+		Jobs:      batchJobs,
+		CreatedAt: time.Now(),
+	})
+
+	log.Printf("[BulkUpload] batch=%s total=%d queued=%d skipped=%d", batchID, len(files), queued, skipped)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusMultiStatus) // 207
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"batch_id":         batchID,
+		"total":            len(files),
+		"queued":           queued,
+		"skipped":          skipped,
+		"check_status_url": fmt.Sprintf("/api/cv/batch/%s", batchID),
+		"results":          results,
+	})
+}
+
+// GetBatchStatusHandler returns the processing status for all jobs in a batch.
+// @Summary Get batch upload status
+// @Description Get the processing status of all CVs uploaded in a bulk upload batch
+// @Tags cv
+// @Produce json
+// @Param batch_id path string true "Batch ID returned by bulk-upload"
+// @Success 200 {object} map[string]interface{}
+// @Failure 404 {object} map[string]string
+// @Router /cv/batch/{batch_id} [get]
+func (a *API) GetBatchStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	batchID := strings.TrimPrefix(r.URL.Path, "/api/cv/batch/")
+	if batchID == "" {
+		http.Error(w, "missing batch_id", http.StatusBadRequest)
+		return
+	}
+
+	entry, ok := a.batchStore.get(batchID)
+	if !ok {
+		http.Error(w, "batch not found (may have expired after 30 minutes)", http.StatusNotFound)
+		return
+	}
+
+	type JobStatus struct {
+		JobID    int64  `json:"job_id"`
+		Filename string `json:"filename"`
+		CVID     int64  `json:"cv_file_id"`
+		Status   string `json:"status"`
+	}
+
+	jobs := make([]JobStatus, 0, len(entry.Jobs))
+	summary := map[string]int{
+		"total": len(entry.Jobs), "completed": 0, "processing": 0, "pending": 0, "failed": 0,
+	}
+
+	for _, bj := range entry.Jobs {
+		job, err := a.db.GetJobByID(r.Context(), bj.JobID)
+		status := "unknown"
+		if err != nil {
+			log.Printf("[BatchStatus] GetJobByID(%d) error: %v", bj.JobID, err)
+		} else if job != nil {
+			status = job.Status
+		} else {
+			log.Printf("[BatchStatus] GetJobByID(%d) returned nil (not found)", bj.JobID)
+		}
+
+		if _, tracked := summary[status]; tracked {
+			summary[status]++
+		}
+		jobs = append(jobs, JobStatus{
+			JobID: bj.JobID, Filename: bj.Filename, CVID: bj.CVID, Status: status,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"batch_id": batchID,
+		"summary":  summary,
+		"jobs":     jobs,
+	})
 }

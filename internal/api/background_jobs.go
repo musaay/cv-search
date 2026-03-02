@@ -174,11 +174,12 @@ func (a *API) cvProcessingWorker() {
 	}
 }
 
-// queueCVProcessingJob adds a new CV processing job to the background queue
-func (a *API) queueCVProcessingJob(jobID, cvFileID int64, cvText string) {
+// queueCVProcessingJob adds a new CV processing job to the background queue.
+// Returns true if the job was queued, false if the queue was full.
+func (a *API) queueCVProcessingJob(jobID, cvFileID int64, cvText string) bool {
 	if a.cvProcessingQueue == nil {
 		log.Printf("[BackgroundJobs] CV processing queue not initialized, skipping job %d", jobID)
-		return
+		return false
 	}
 
 	job := CVProcessingJob{
@@ -192,12 +193,14 @@ func (a *API) queueCVProcessingJob(jobID, cvFileID int64, cvText string) {
 	select {
 	case a.cvProcessingQueue <- job:
 		log.Printf("[BackgroundJobs] Queued CV processing job %d (CV file %d)", jobID, cvFileID)
+		return true
 	default:
 		log.Printf("[BackgroundJobs] Queue full! Dropping CV processing job %d", jobID)
 		// Update job status to failed
 		ctx := context.Background()
 		errMsg := "Queue full, job dropped"
 		a.db.UpdateJobStatus(ctx, jobID, "failed", &errMsg)
+		return false
 	}
 }
 

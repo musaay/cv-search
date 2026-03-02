@@ -4,12 +4,70 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 
 	"cv-search/internal/cv"
 	"cv-search/internal/graphrag"
 	"cv-search/internal/llm"
 	"cv-search/internal/storage"
 )
+
+// BatchJob holds per-file info within a batch upload.
+type BatchJob struct {
+	JobID    int64  `json:"job_id"`
+	Filename string `json:"filename"`
+	CVID     int64  `json:"cv_file_id"`
+}
+
+// BatchEntry groups all jobs created in a single bulk upload call.
+type BatchEntry struct {
+	BatchID   string     `json:"batch_id"`
+	Jobs      []BatchJob `json:"jobs"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// BatchStore is an in-memory store for batch upload state (30-min TTL).
+type BatchStore struct {
+	mu      sync.RWMutex
+	entries map[string]*BatchEntry
+	ttl     time.Duration
+}
+
+func newBatchStore(ttl time.Duration) *BatchStore {
+	bs := &BatchStore{
+		entries: make(map[string]*BatchEntry),
+		ttl:     ttl,
+	}
+	go bs.cleanup()
+	return bs
+}
+
+func (bs *BatchStore) set(entry *BatchEntry) {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.entries[entry.BatchID] = entry
+}
+
+func (bs *BatchStore) get(batchID string) (*BatchEntry, bool) {
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+	e, ok := bs.entries[batchID]
+	return e, ok
+}
+
+func (bs *BatchStore) cleanup() {
+	for {
+		time.Sleep(10 * time.Minute)
+		bs.mu.Lock()
+		for k, v := range bs.entries {
+			if time.Since(v.CreatedAt) > bs.ttl {
+				delete(bs.entries, k)
+			}
+		}
+		bs.mu.Unlock()
+	}
+}
 
 type API struct {
 	db                   *storage.DB
@@ -21,6 +79,7 @@ type API struct {
 	hybridSearchEngine   *graphrag.HybridSearchEngine   // BM25 + Vector + Graph + LLM reranking
 	cvProcessingQueue    chan CVProcessingJob           // Background queue for async CV processing (LLM + Graph)
 	embeddingQueue       chan EmbeddingJob              // Background queue for async embedding generation
+	batchStore           *BatchStore                   // In-memory store for bulk upload batches
 }
 
 func NewAPI(db *storage.DB) *API {
@@ -82,6 +141,7 @@ func NewAPI(db *storage.DB) *API {
 		hybridSearchEngine:   hybridSearchEngine,
 		cvProcessingQueue:    make(chan CVProcessingJob, 50), // Buffer for 50 CV processing jobs
 		embeddingQueue:       make(chan EmbeddingJob, 100),   // Buffer for 100 embedding jobs
+		batchStore:           newBatchStore(30 * time.Minute),
 	}
 
 	// Start background workers

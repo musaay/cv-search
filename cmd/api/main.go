@@ -65,7 +65,7 @@ func main() {
 	srv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      router,
-		ReadTimeout:  30 * time.Second, // File upload için
+		ReadTimeout:  2 * time.Minute, // File upload için (bulk upload desteği)
 		WriteTimeout: 15 * time.Minute, // LLM processing + response için (Ollama 10 dakika + buffer)
 		IdleTimeout:  120 * time.Second,
 	}
