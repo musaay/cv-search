@@ -205,7 +205,7 @@ func (s *Service) callOpenAI(prompt string) (string, error) {
 				"content": prompt,
 			},
 		},
-		"temperature": 0.1,
+		"temperature": 0.0, // Deterministic: no hallucination in CV parsing/reranking
 		"response_format": map[string]string{
 			"type": "json_object",
 		},
@@ -271,6 +271,9 @@ func (s *Service) callOllama(prompt string) (string, error) {
 		"prompt": prompt,
 		"stream": false,
 		"format": "json",
+		"options": map[string]interface{}{
+			"temperature": 0.0, // Deterministic: no hallucination in CV parsing/reranking
+		},
 	}
 
 	jsonData, _ := json.Marshal(reqBody)
@@ -339,7 +342,7 @@ func (s *Service) callGroq(prompt string) (string, error) {
 				"content": prompt,
 			},
 		},
-		"temperature": 0.1,
+		"temperature": 0.0, // Deterministic: no hallucination in CV parsing/reranking
 		"response_format": map[string]string{
 			"type": "json_object",
 		},

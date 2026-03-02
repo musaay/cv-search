@@ -3,6 +3,7 @@ package graphrag
 import (
 	"crypto/md5"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -94,4 +95,101 @@ func (c *LLMCache) generateKey(query string, candidateIDs []string) string {
 	}
 	hash := md5.Sum([]byte(data))
 	return fmt.Sprintf("%x", hash)
+}
+
+// ─── Semantic Cache ───────────────────────────────────────────────────────────
+// Stores query embeddings and results. On a new query, computes cosine similarity
+// against stored embeddings; if similarity >= threshold it is treated as the same
+// query and the cached results are returned immediately (bypasses full pipeline).
+
+// SemanticCache caches search results keyed by query embedding similarity.
+type SemanticCache struct {
+	mu        sync.RWMutex
+	entries   []*semanticCacheEntry
+	ttl       time.Duration
+	threshold float64 // cosine similarity threshold, e.g. 0.95
+}
+
+type semanticCacheEntry struct {
+	QueryEmbedding []float32
+	QueryText      string
+	Results        []FusedCandidate
+	Timestamp      time.Time
+}
+
+// NewSemanticCache creates a semantic cache with given TTL and similarity threshold.
+func NewSemanticCache(ttl time.Duration, threshold float64) *SemanticCache {
+	return &SemanticCache{
+		entries:   make([]*semanticCacheEntry, 0),
+		ttl:       ttl,
+		threshold: threshold,
+	}
+}
+
+// Get returns cached results if a sufficiently similar query exists and has not expired.
+// Returns (results, originalQueryText, found).
+func (c *SemanticCache) Get(queryEmbedding []float32) ([]FusedCandidate, string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	now := time.Now()
+	bestSim := -1.0
+	var bestEntry *semanticCacheEntry
+
+	for _, entry := range c.entries {
+		if now.Sub(entry.Timestamp) > c.ttl {
+			continue
+		}
+		sim := cosineSimilarity32(queryEmbedding, entry.QueryEmbedding)
+		if sim >= c.threshold && sim > bestSim {
+			bestSim = sim
+			bestEntry = entry
+		}
+	}
+
+	if bestEntry != nil {
+		return bestEntry.Results, bestEntry.QueryText, true
+	}
+	return nil, "", false
+}
+
+// Set stores results for a query embedding, evicting expired entries first.
+func (c *SemanticCache) Set(queryEmbedding []float32, queryText string, results []FusedCandidate) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Evict expired entries
+	now := time.Now()
+	valid := c.entries[:0]
+	for _, e := range c.entries {
+		if now.Sub(e.Timestamp) <= c.ttl {
+			valid = append(valid, e)
+		}
+	}
+	c.entries = valid
+
+	c.entries = append(c.entries, &semanticCacheEntry{
+		QueryEmbedding: queryEmbedding,
+		QueryText:      queryText,
+		Results:        results,
+		Timestamp:      now,
+	})
+}
+
+// cosineSimilarity32 computes cosine similarity between two float32 vectors.
+func cosineSimilarity32(a, b []float32) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		ai, bi := float64(a[i]), float64(b[i])
+		dot += ai * bi
+		normA += ai * ai
+		normB += bi * bi
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }

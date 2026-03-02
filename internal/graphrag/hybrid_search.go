@@ -8,6 +8,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 )
 
 // HybridSearchEngine combines BM25 + Vector + Graph search
@@ -18,6 +19,8 @@ type HybridSearchEngine struct {
 	embeddingService *EmbeddingService
 	graphQuerier     *GraphQuerier
 	llm              LLMClient
+	scorer           *LLMScorer     // persistent across requests so its LLM cache survives between searches
+	semanticCache    *SemanticCache // skip full pipeline for semantically identical queries
 }
 
 func NewHybridSearchEngine(db *sql.DB, llm LLMClient, openaiKey string) *HybridSearchEngine {
@@ -27,6 +30,8 @@ func NewHybridSearchEngine(db *sql.DB, llm LLMClient, openaiKey string) *HybridS
 		embeddingService: NewEmbeddingService(openaiKey, db),
 		graphQuerier:     NewGraphQuerier(db),
 		llm:              llm,
+		scorer:           NewLLMScorer(llm),
+		semanticCache:    NewSemanticCache(30*time.Minute, 0.95),
 	}
 }
 
@@ -76,7 +81,7 @@ func DefaultHybridConfig() HybridSearchConfig {
 		VectorWeight:       0.6, // Increased from 0.4
 		GraphWeight:        0.4, // Increased from 0.3
 		TopK:               100,
-		FinalTopN:          0, // 0 = no limit, send all candidates to LLM
+		FinalTopN:          15, // Two-Stage Retrieval: 100 → fusion → top 15 → LLM (was 0 = unlimited)
 		UseCommunityFilter: false,
 		CommunityThreshold: 50,
 	}
@@ -85,6 +90,19 @@ func DefaultHybridConfig() HybridSearchConfig {
 // Search performs hybrid search with fusion
 func (h *HybridSearchEngine) Search(ctx context.Context, query string, config HybridSearchConfig) ([]FusedCandidate, error) {
 	log.Printf("[HybridSearch] Starting search for: %s", query)
+
+	// Semantic cache: if a semantically identical query ran recently, return immediately (<5ms)
+	var queryEmbedding []float32
+	var embErr error
+	queryEmbedding, embErr = h.embeddingService.GenerateEmbedding(ctx, query)
+	if embErr == nil {
+		if cached, cachedQuery, found := h.semanticCache.Get(queryEmbedding); found {
+			log.Printf("[HybridSearch] Semantic cache HIT (similar to: %q) → %d cached results", cachedQuery, len(cached))
+			return cached, nil
+		}
+	} else {
+		log.Printf("[HybridSearch] Semantic cache embedding failed: %v", embErr)
+	}
 
 	// CRITICAL: Clear ALL prepared statements at the start to prevent cache collisions
 	// This fixes "bind message supplies X parameters but requires Y" errors across all searches
@@ -210,9 +228,8 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 
 	log.Printf("[HybridSearch] Fusion complete. Top %d candidates ready for LLM reranking", len(fusedCandidates))
 
-	// Step 4: LLM Reranking (Pure LLM Scoring - NO local heuristics!)
-	scorer := NewLLMScorer(h.llm)
-	llmScores, err := scorer.ScoreCandidates(ctx, query, fusedCandidates)
+	// Step 4: LLM Reranking — persistent scorer keeps its cache alive across requests
+	llmScores, err := h.scorer.ScoreCandidates(ctx, query, fusedCandidates)
 	if err != nil {
 		log.Printf("[HybridSearch] LLM scoring failed, returning fusion scores: %v", err)
 		// Fallback: use fusion scores
@@ -263,6 +280,12 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 
 	log.Printf("[HybridSearch] Final ranking complete. Top candidate: %s (LLM Score: %.2f)",
 		validCandidates[0].Name, validCandidates[0].LLMScore)
+
+	// Store results in semantic cache for future similar queries
+	if embErr == nil {
+		h.semanticCache.Set(queryEmbedding, query, validCandidates)
+		log.Printf("[HybridSearch] Results stored in semantic cache (30m TTL)")
+	}
 
 	return validCandidates, nil
 } // fuseResults combines results using weighted scoring

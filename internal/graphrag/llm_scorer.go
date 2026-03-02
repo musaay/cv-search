@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -39,8 +40,10 @@ type LLMScoreResponse struct {
 	Summary    string           `json:"summary"`
 }
 
-// ScoreCandidates sends candidates to LLM for scoring
-// Returns scored and sorted candidates
+const llmBatchSize = 10 // candidates per goroutine; keeps individual prompts small
+
+// ScoreCandidates sends candidates to LLM for scoring using parallel batches.
+// Returns scored and sorted candidates.
 func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidates []FusedCandidate) ([]CandidateScore, error) {
 	if len(candidates) == 0 {
 		return []CandidateScore{}, nil
@@ -57,29 +60,65 @@ func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidate
 		return cachedScores, nil
 	}
 
-	log.Printf("[LLMScorer] Cache MISS - Scoring %d candidates for query: %s", len(candidates), query)
-
-	// Build prompt with candidate features
-	prompt := s.buildScoringPrompt(query, candidates)
-
-	// Call LLM
-	response, err := s.llm.Generate(prompt)
-	if err != nil {
-		return nil, fmt.Errorf("llm scoring failed: %w", err)
+	// Split candidates into batches
+	var batches [][]FusedCandidate
+	for i := 0; i < len(candidates); i += llmBatchSize {
+		end := i + llmBatchSize
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		batches = append(batches, candidates[i:end])
 	}
 
-	// Parse structured response
-	scores, err := s.parseScoreResponse(response)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse llm scores: %w", err)
+	log.Printf("[LLMScorer] Scoring %d candidates in %d parallel batch(es) of up to %d", len(candidates), len(batches), llmBatchSize)
+
+	type batchResult struct {
+		scores []CandidateScore
+		err    error
+	}
+	results := make([]batchResult, len(batches))
+	var wg sync.WaitGroup
+
+	for i, batch := range batches {
+		wg.Add(1)
+		go func(idx int, b []FusedCandidate) {
+			defer wg.Done()
+			prompt := s.buildScoringPrompt(query, b)
+			response, err := s.llm.Generate(prompt)
+			if err != nil {
+				results[idx] = batchResult{err: fmt.Errorf("batch %d LLM call failed: %w", idx, err)}
+				return
+			}
+			parsed, err := s.parseScoreResponse(response)
+			if err != nil {
+				results[idx] = batchResult{err: fmt.Errorf("batch %d parse failed: %w", idx, err)}
+				return
+			}
+			results[idx] = batchResult{scores: parsed.Candidates}
+		}(i, batch)
 	}
 
-	log.Printf("[LLMScorer] Successfully scored %d candidates", len(scores.Candidates))
+	wg.Wait()
 
-	// Cache the results
-	s.cache.Set(query, candidateIDs, scores.Candidates)
+	var allScores []CandidateScore
+	for i, r := range results {
+		if r.err != nil {
+			log.Printf("[LLMScorer] Batch %d failed: %v", i, r.err)
+			continue
+		}
+		allScores = append(allScores, r.scores...)
+	}
 
-	return scores.Candidates, nil
+	if len(allScores) == 0 {
+		return nil, fmt.Errorf("all LLM scoring batches failed")
+	}
+
+	log.Printf("[LLMScorer] Successfully scored %d candidates across %d batch(es)", len(allScores), len(batches))
+
+	// Cache the combined results
+	s.cache.Set(query, candidateIDs, allScores)
+
+	return allScores, nil
 }
 
 // buildScoringPrompt creates a detailed prompt for LLM scoring
@@ -293,11 +332,14 @@ func companyNames(companies []CompanyNode) string {
 	}
 	names := make([]string, len(companies))
 	for i, c := range companies {
-		if c.IsCurrent {
-			names[i] = fmt.Sprintf("%s (Current)", c.Name)
-		} else {
-			names[i] = c.Name
+		entry := c.Name
+		if c.Position != "" {
+			entry = fmt.Sprintf("%s (%s)", c.Name, c.Position)
 		}
+		if c.IsCurrent {
+			entry += " [Current]"
+		}
+		names[i] = entry
 	}
 	return strings.Join(names, ", ")
 }
