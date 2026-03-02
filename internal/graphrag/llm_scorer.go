@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +21,7 @@ type LLMScorer struct {
 func NewLLMScorer(llm LLMClient) *LLMScorer {
 	return &LLMScorer{
 		llm:   llm,
-		cache: NewLLMCache(5 * time.Minute), // Cache for 5 minutes
+		cache: NewLLMCache(30 * time.Minute), // Match semantic cache TTL
 	}
 }
 
@@ -40,7 +41,7 @@ type LLMScoreResponse struct {
 	Summary    string           `json:"summary"`
 }
 
-const llmBatchSize = 10 // candidates per goroutine; keeps individual prompts small
+const llmBatchSize = 4 // candidates per goroutine; smaller batches = more parallelism = faster
 
 // ScoreCandidates sends candidates to LLM for scoring using parallel batches.
 // Returns scored and sorted candidates.
@@ -312,8 +313,41 @@ func skillNames(skills []SkillNode) string {
 	if len(skills) == 0 {
 		return "None listed"
 	}
-	names := make([]string, len(skills))
-	for i, s := range skills {
+
+	// Sort by proficiency (Expert first) then years of experience desc
+	// Unknown/empty proficiency ranks last (4)
+	sorted := make([]SkillNode, len(skills))
+	copy(sorted, skills)
+	profRank := func(p string) int {
+		switch p {
+		case "Expert":
+			return 0
+		case "Advanced":
+			return 1
+		case "Intermediate":
+			return 2
+		case "Beginner":
+			return 3
+		default:
+			return 4 // empty or unknown → lowest priority
+		}
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		pi := profRank(sorted[i].Proficiency)
+		pj := profRank(sorted[j].Proficiency)
+		if pi != pj {
+			return pi < pj
+		}
+		return sorted[i].YearsOfExperience > sorted[j].YearsOfExperience
+	})
+
+	// Cap at 8 most relevant skills to keep prompt concise
+	if len(sorted) > 8 {
+		sorted = sorted[:8]
+	}
+
+	names := make([]string, len(sorted))
+	for i, s := range sorted {
 		if s.Proficiency != "" && s.YearsOfExperience > 0 {
 			names[i] = fmt.Sprintf("%s (%s, %d yrs)", s.Name, s.Proficiency, s.YearsOfExperience)
 		} else if s.Proficiency != "" {

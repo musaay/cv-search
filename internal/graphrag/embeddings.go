@@ -207,15 +207,22 @@ func (s *EmbeddingService) BatchEmbedAllNodes(ctx context.Context) error {
 }
 
 // SimilaritySearch finds similar nodes using vector similarity
-func (s *EmbeddingService) SimilaritySearch(ctx context.Context, queryText string, topK int) ([]string, []float64, error) {
-	// Clear prepared statement cache to prevent binding errors
-	s.db.Exec("DEALLOCATE ALL")
+// SimilaritySearchByEmbedding performs vector search using a pre-computed embedding,
+// avoiding a redundant API call when the caller already has one.
+func (s *EmbeddingService) SimilaritySearchByEmbedding(ctx context.Context, queryEmbedding []float32, topK int) ([]string, []float64, error) {
+	return s.similaritySearchWithEmbedding(ctx, queryEmbedding, topK)
+}
 
+func (s *EmbeddingService) SimilaritySearch(ctx context.Context, queryText string, topK int) ([]string, []float64, error) {
 	// Generate query embedding
 	queryEmbedding, err := s.GenerateEmbedding(ctx, queryText)
 	if err != nil {
 		return nil, nil, err
 	}
+	return s.similaritySearchWithEmbedding(ctx, queryEmbedding, topK)
+}
+
+func (s *EmbeddingService) similaritySearchWithEmbedding(ctx context.Context, queryEmbedding []float32, topK int) ([]string, []float64, error) {
 
 	embeddingJSON, _ := json.Marshal(queryEmbedding)
 

@@ -104,8 +104,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		log.Printf("[HybridSearch] Semantic cache embedding failed: %v", embErr)
 	}
 
-	// CRITICAL: Clear ALL prepared statements at the start to prevent cache collisions
-	// This fixes "bind message supplies X parameters but requires Y" errors across all searches
+	// Clear ALL prepared statements once before parallel retrieval to prevent cache collisions
 	h.db.Exec("DEALLOCATE ALL")
 
 	// Step 1: Parallel retrieval from 3 sources
@@ -124,9 +123,16 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		bm25ResultsChan <- results
 	}()
 
-	// Vector search
+	// Vector search — reuse the embedding already generated for semantic cache (saves ~2s API call)
 	go func() {
-		personIDs, similarities, err := h.embeddingService.SimilaritySearch(ctx, query, config.TopK)
+		var personIDs []string
+		var similarities []float64
+		var err error
+		if queryEmbedding != nil {
+			personIDs, similarities, err = h.embeddingService.SimilaritySearchByEmbedding(ctx, queryEmbedding, config.TopK)
+		} else {
+			personIDs, similarities, err = h.embeddingService.SimilaritySearch(ctx, query, config.TopK)
+		}
 		if err != nil {
 			errChan <- fmt.Errorf("vector failed: %w", err)
 			return
