@@ -16,56 +16,31 @@ const docTemplate = `{
             "email": "support@swagger.io"
         },
         "license": {
-            "name": "Apache 2.0",
-            "url": "http://www.apache.org/licenses/LICENSE-2.0.html"
+            "name": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
         },
         "version": "{{.Version}}"
     },
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/search/hybrid": {
-            "post": {
-                "description": "Search candidates using multi-source retrieval (BM25 + Vector + Graph) with fusion and pure LLM reranking",
-                "consumes": [
-                    "application/json"
-                ],
+        "/cv/batch/{batch_id}": {
+            "get": {
+                "description": "Get the processing status of all CVs uploaded in a bulk upload batch",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "search"
+                    "cv"
                 ],
-                "summary": "Hybrid Search (BM25 + Vector + Graph + LLM)",
+                "summary": "Get batch upload status",
                 "parameters": [
                     {
-                        "description": "Hybrid search request",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string"
-                                },
-                                "bm25_weight": {
-                                    "type": "number"
-                                },
-                                "vector_weight": {
-                                    "type": "number"
-                                },
-                                "graph_weight": {
-                                    "type": "number"
-                                },
-                                "top_k": {
-                                    "type": "integer"
-                                },
-                                "final_top_n": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
+                        "type": "string",
+                        "description": "Batch ID returned by bulk-upload",
+                        "name": "batch_id",
+                        "in": "path",
+                        "required": true
                     }
                 ],
                 "responses": {
@@ -76,8 +51,89 @@ const docTemplate = `{
                             "additionalProperties": true
                         }
                     },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/cv/bulk-upload": {
+            "post": {
+                "description": "Upload multiple CV files at once (max 10 files, 1 MB each, 10 MB total)",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cv"
+                ],
+                "summary": "Bulk upload CVs",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "CV files (PDF, DOCX, TXT) — field name: files",
+                        "name": "files",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "207": {
+                        "description": "Multi-Status",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/cv/job/{job_id}": {
+            "get": {
+                "description": "Get the current status of an async CV processing job",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cv"
+                ],
+                "summary": "Get CV processing job status",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Job ID",
+                        "name": "job_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -154,78 +210,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/discover": {
-            "post": {
-                "description": "Discover candidate profiles using Google Custom Search API (supports OR/AND logic for skills)",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "discovery"
-                ],
-                "summary": "Discover candidate profiles",
-                "parameters": [
-                    {
-                        "description": "Discovery parameters",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "limit": {
-                                    "type": "integer"
-                                },
-                                "location": {
-                                    "type": "string"
-                                },
-                                "skills": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                },
-                                "skills_any_of": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/discover.Result"
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "502": {
-                        "description": "Bad Gateway",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/graph/skills/popular": {
             "get": {
                 "description": "Get most popular skills extracted from CVs",
@@ -277,9 +261,9 @@ const docTemplate = `{
                 }
             }
         },
-        "/graphrag/search": {
+        "/graphrag/communities/detect": {
             "post": {
-                "description": "Search candidates using natural language powered by GraphRAG (Graph + LLM)",
+                "description": "Run Leiden algorithm to detect communities in the knowledge graph",
                 "consumes": [
                     "application/json"
                 ],
@@ -289,7 +273,81 @@ const docTemplate = `{
                 "tags": [
                     "graphrag"
                 ],
-                "summary": "GraphRAG Search",
+                "summary": "Detect Communities",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Hierarchy level (default: 0)",
+                        "name": "level",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/graphrag/embeddings/generate": {
+            "post": {
+                "description": "Generate OpenAI embeddings for all nodes in the knowledge graph",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "graphrag"
+                ],
+                "summary": "Generate Vector Embeddings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/graphrag/search": {
+            "post": {
+                "description": "Search candidates using natural language with Vector embeddings, Community detection, and LLM reasoning (Microsoft GraphRAG style)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "graphrag"
+                ],
+                "summary": "GraphRAG Search (Vector + Community + LLM)",
                 "parameters": [
                     {
                         "description": "Natural language search query",
@@ -384,9 +442,133 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/search/hybrid": {
+            "post": {
+                "description": "Search candidates using multi-source retrieval with fusion and pure LLM reranking",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "search"
+                ],
+                "summary": "Hybrid Search (BM25 + Vector + Graph + LLM)",
+                "parameters": [
+                    {
+                        "description": "Hybrid search request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.HybridSearchRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.HybridSearchResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
+        "api.FusedCandidateResponse": {
+            "type": "object",
+            "properties": {
+                "bm25_score": {
+                    "type": "number"
+                },
+                "communities": {
+                    "description": "All matching communities",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "community": {
+                    "description": "Primary community",
+                    "type": "string"
+                },
+                "community_scores": {
+                    "description": "Score for each community",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "number",
+                        "format": "float64"
+                    }
+                },
+                "companies": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/graphrag.CompanyNode"
+                    }
+                },
+                "current_position": {
+                    "type": "string"
+                },
+                "fusion_score": {
+                    "type": "number"
+                },
+                "graph_score": {
+                    "type": "number"
+                },
+                "llm_reasoning": {
+                    "type": "string"
+                },
+                "llm_score": {
+                    "type": "number"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "person_id": {
+                    "type": "string"
+                },
+                "rank": {
+                    "type": "integer"
+                },
+                "seniority": {
+                    "type": "string"
+                },
+                "skills": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/graphrag.SkillNode"
+                    }
+                },
+                "total_experience_years": {
+                    "type": "integer"
+                },
+                "vector_score": {
+                    "type": "number"
+                }
+            }
+        },
         "api.GraphRAGSearchRequest": {
             "type": "object",
             "properties": {
@@ -395,25 +577,121 @@ const docTemplate = `{
                 }
             }
         },
-        "discover.Result": {
+        "api.HybridSearchRequest": {
             "type": "object",
             "properties": {
-                "already_exists": {
-                    "description": "Indicates if candidate is already in DB",
+                "bm25_weight": {
+                    "description": "Default: 0.3",
+                    "type": "number"
+                },
+                "final_top_n": {
+                    "description": "Max candidates to send to LLM (default: 0 = all)",
+                    "type": "integer"
+                },
+                "graph_weight": {
+                    "description": "Default: 0.3",
+                    "type": "number"
+                },
+                "query": {
+                    "type": "string"
+                },
+                "top_k": {
+                    "description": "Per-source retrieval limit (default: 100)",
+                    "type": "integer"
+                },
+                "vector_weight": {
+                    "description": "Default: 0.4",
+                    "type": "number"
+                }
+            }
+        },
+        "api.HybridSearchResponse": {
+            "type": "object",
+            "properties": {
+                "candidates": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.FusedCandidateResponse"
+                    }
+                },
+                "config": {
+                    "$ref": "#/definitions/graphrag.HybridSearchConfig"
+                },
+                "method": {
+                    "type": "string"
+                },
+                "processing_time": {
+                    "type": "string"
+                },
+                "query": {
+                    "type": "string"
+                },
+                "total_found": {
+                    "type": "integer"
+                }
+            }
+        },
+        "graphrag.CompanyNode": {
+            "type": "object",
+            "properties": {
+                "is_current": {
                     "type": "boolean"
                 },
-                "last_updated": {
-                    "description": "When candidate was last scraped",
+                "name": {
                     "type": "string"
                 },
-                "snippet": {
+                "position": {
+                    "type": "string"
+                }
+            }
+        },
+        "graphrag.HybridSearchConfig": {
+            "type": "object",
+            "properties": {
+                "bm25Weight": {
+                    "description": "Default: 0.3",
+                    "type": "number",
+                    "format": "float64"
+                },
+                "communityThreshold": {
+                    "description": "Auto-enable community filter at this candidate count (default: 50)",
+                    "type": "integer"
+                },
+                "finalTopN": {
+                    "description": "How many to send to LLM for reranking",
+                    "type": "integer"
+                },
+                "graphWeight": {
+                    "description": "Default: 0.3",
+                    "type": "number",
+                    "format": "float64"
+                },
+                "topK": {
+                    "description": "How many candidates to retrieve from each source",
+                    "type": "integer"
+                },
+                "useCommunityFilter": {
+                    "description": "Enable community-based filtering (default: false, enabled at 50+ candidates)",
+                    "type": "boolean"
+                },
+                "vectorWeight": {
+                    "description": "Default: 0.4",
+                    "type": "number",
+                    "format": "float64"
+                }
+            }
+        },
+        "graphrag.SkillNode": {
+            "type": "object",
+            "properties": {
+                "name": {
                     "type": "string"
                 },
-                "title": {
+                "proficiency": {
                     "type": "string"
                 },
-                "url": {
-                    "type": "string"
+                "years_of_experience": {
+                    "type": "integer"
                 }
             }
         },
@@ -471,12 +749,12 @@ const docTemplate = `{
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
-	Version:          "1.0",
+	Version:          "2.0",
 	Host:             "cv-search-production.up.railway.app",
 	BasePath:         "/api",
 	Schemes:          []string{"https"},
 	Title:            "CV Search & GraphRAG API",
-	Description:      "AI-powered CV search with GraphRAG, Hybrid Search, and LLM-based ranking",
+	Description:      "AI-powered CV search system with GraphRAG and Hybrid Search capabilities",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

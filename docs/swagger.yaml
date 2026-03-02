@@ -1,24 +1,142 @@
 basePath: /api
 definitions:
+  api.FusedCandidateResponse:
+    properties:
+      bm25_score:
+        type: number
+      communities:
+        description: All matching communities
+        items:
+          type: string
+        type: array
+      community:
+        description: Primary community
+        type: string
+      community_scores:
+        additionalProperties:
+          format: float64
+          type: number
+        description: Score for each community
+        type: object
+      companies:
+        items:
+          $ref: '#/definitions/graphrag.CompanyNode'
+        type: array
+      current_position:
+        type: string
+      fusion_score:
+        type: number
+      graph_score:
+        type: number
+      llm_reasoning:
+        type: string
+      llm_score:
+        type: number
+      name:
+        type: string
+      person_id:
+        type: string
+      rank:
+        type: integer
+      seniority:
+        type: string
+      skills:
+        items:
+          $ref: '#/definitions/graphrag.SkillNode'
+        type: array
+      total_experience_years:
+        type: integer
+      vector_score:
+        type: number
+    type: object
   api.GraphRAGSearchRequest:
     properties:
       query:
         type: string
     type: object
-  discover.Result:
+  api.HybridSearchRequest:
     properties:
-      already_exists:
-        description: Indicates if candidate is already in DB
+      bm25_weight:
+        description: 'Default: 0.3'
+        type: number
+      final_top_n:
+        description: 'Max candidates to send to LLM (default: 0 = all)'
+        type: integer
+      graph_weight:
+        description: 'Default: 0.3'
+        type: number
+      query:
+        type: string
+      top_k:
+        description: 'Per-source retrieval limit (default: 100)'
+        type: integer
+      vector_weight:
+        description: 'Default: 0.4'
+        type: number
+    type: object
+  api.HybridSearchResponse:
+    properties:
+      candidates:
+        items:
+          $ref: '#/definitions/api.FusedCandidateResponse'
+        type: array
+      config:
+        $ref: '#/definitions/graphrag.HybridSearchConfig'
+      method:
+        type: string
+      processing_time:
+        type: string
+      query:
+        type: string
+      total_found:
+        type: integer
+    type: object
+  graphrag.CompanyNode:
+    properties:
+      is_current:
         type: boolean
-      last_updated:
-        description: When candidate was last scraped
+      name:
         type: string
-      snippet:
+      position:
         type: string
-      title:
+    type: object
+  graphrag.HybridSearchConfig:
+    properties:
+      bm25Weight:
+        description: 'Default: 0.3'
+        format: float64
+        type: number
+      communityThreshold:
+        description: 'Auto-enable community filter at this candidate count (default:
+          50)'
+        type: integer
+      finalTopN:
+        description: How many to send to LLM for reranking
+        type: integer
+      graphWeight:
+        description: 'Default: 0.3'
+        format: float64
+        type: number
+      topK:
+        description: How many candidates to retrieve from each source
+        type: integer
+      useCommunityFilter:
+        description: 'Enable community-based filtering (default: false, enabled at
+          50+ candidates)'
+        type: boolean
+      vectorWeight:
+        description: 'Default: 0.4'
+        format: float64
+        type: number
+    type: object
+  graphrag.SkillNode:
+    properties:
+      name:
         type: string
-      url:
+      proficiency:
         type: string
+      years_of_experience:
+        type: integer
     type: object
   storage.Candidate:
     properties:
@@ -58,86 +176,89 @@ info:
     email: support@swagger.io
     name: API Support
     url: http://www.swagger.io/support
-  description: AI-powered CV search with GraphRAG, Hybrid Search, and LLM-based ranking
+  description: AI-powered CV search system with GraphRAG and Hybrid Search capabilities
   license:
-    name: Apache 2.0
-    url: http://www.apache.org/licenses/LICENSE-2.0.html
+    name: MIT
+    url: https://opensource.org/licenses/MIT
   termsOfService: http://swagger.io/terms/
   title: CV Search & GraphRAG API
-  version: "1.0"
+  version: "2.0"
 paths:
-  /search/hybrid:
-    post:
-      consumes:
-      - application/json
-      description: Search candidates using multi-source retrieval (BM25 + Vector + Graph) with fusion and pure LLM reranking
+  /cv/batch/{batch_id}:
+    get:
+      description: Get the processing status of all CVs uploaded in a bulk upload
+        batch
       parameters:
-      - description: Hybrid search request
-        in: body
-        name: request
+      - description: Batch ID returned by bulk-upload
+        in: path
+        name: batch_id
         required: true
-        schema:
-          properties:
-            query:
-              description: Natural language search query
-              type: string
-            bm25_weight:
-              description: 'BM25 weight (default: 0.3)'
-              type: number
-            vector_weight:
-              description: 'Vector weight (default: 0.4)'
-              type: number
-            graph_weight:
-              description: 'Graph weight (default: 0.3)'
-              type: number
-            top_k:
-              description: 'Per-source retrieval limit (default: 100)'
-              type: integer
-            final_top_n:
-              description: 'How many to send to LLM (default: 50)'
-              type: integer
-          type: object
+        type: string
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            properties:
-              query:
-                type: string
-              candidates:
-                items:
-                  properties:
-                    person_id:
-                      type: string
-                    name:
-                      type: string
-                    bm25_score:
-                      type: number
-                    vector_score:
-                      type: number
-                    graph_score:
-                      type: number
-                    fusion_score:
-                      type: number
-                    llm_score:
-                      type: number
-                    llm_reasoning:
-                      type: string
-                    rank:
-                      type: integer
-                  type: object
-                type: array
-              total_found:
-                type: integer
-              processing_time:
-                type: string
-              method:
-                type: string
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get batch upload status
+      tags:
+      - cv
+  /cv/bulk-upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload multiple CV files at once (max 10 files, 1 MB each, 10 MB
+        total)
+      parameters:
+      - description: 'CV files (PDF, DOCX, TXT) — field name: files'
+        in: formData
+        name: files
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "207":
+          description: Multi-Status
+          schema:
+            additionalProperties: true
             type: object
         "400":
           description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Bulk upload CVs
+      tags:
+      - cv
+  /cv/job/{job_id}:
+    get:
+      description: Get the current status of an async CV processing job
+      parameters:
+      - description: Job ID
+        in: path
+        name: job_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
           schema:
             additionalProperties:
               type: string
@@ -148,9 +269,9 @@ paths:
             additionalProperties:
               type: string
             type: object
-      summary: Hybrid Search (BM25 + Vector + Graph + LLM)
+      summary: Get CV processing job status
       tags:
-      - search
+      - cv
   /cv/upload:
     post:
       consumes:
@@ -189,54 +310,6 @@ paths:
       summary: Upload and parse CV
       tags:
       - cv
-  /discover:
-    post:
-      consumes:
-      - application/json
-      description: Discover candidate profiles using Google Custom Search API (supports
-        OR/AND logic for skills)
-      parameters:
-      - description: Discovery parameters
-        in: body
-        name: request
-        required: true
-        schema:
-          properties:
-            limit:
-              type: integer
-            location:
-              type: string
-            skills:
-              items:
-                type: string
-              type: array
-            skills_any_of:
-              type: boolean
-          type: object
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/discover.Result'
-            type: array
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "502":
-          description: Bad Gateway
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      summary: Discover candidate profiles
-      tags:
-      - discovery
   /graph/skills/popular:
     get:
       description: Get most popular skills extracted from CVs
@@ -271,12 +344,61 @@ paths:
       summary: Get graph statistics
       tags:
       - graph
+  /graphrag/communities/detect:
+    post:
+      consumes:
+      - application/json
+      description: Run Leiden algorithm to detect communities in the knowledge graph
+      parameters:
+      - description: 'Hierarchy level (default: 0)'
+        in: query
+        name: level
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Detect Communities
+      tags:
+      - graphrag
+  /graphrag/embeddings/generate:
+    post:
+      consumes:
+      - application/json
+      description: Generate OpenAI embeddings for all nodes in the knowledge graph
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Generate Vector Embeddings
+      tags:
+      - graphrag
   /graphrag/search:
     post:
       consumes:
       - application/json
-      description: Search candidates using natural language powered by GraphRAG (Graph
-        + LLM)
+      description: Search candidates using natural language with Vector embeddings,
+        Community detection, and LLM reasoning (Microsoft GraphRAG style)
       parameters:
       - description: Natural language search query
         in: body
@@ -304,7 +426,7 @@ paths:
             additionalProperties:
               type: string
             type: object
-      summary: GraphRAG Search
+      summary: GraphRAG Search (Vector + Community + LLM)
       tags:
       - graphrag
   /search:
@@ -343,6 +465,41 @@ paths:
       summary: Search candidates
       tags:
       - candidates
+  /search/hybrid:
+    post:
+      consumes:
+      - application/json
+      description: Search candidates using multi-source retrieval with fusion and
+        pure LLM reranking
+      parameters:
+      - description: Hybrid search request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.HybridSearchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.HybridSearchResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Hybrid Search (BM25 + Vector + Graph + LLM)
+      tags:
+      - search
 schemes:
 - https
 swagger: "2.0"
