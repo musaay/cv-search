@@ -7,7 +7,6 @@ import (
 	"log"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -41,7 +40,7 @@ type LLMScoreResponse struct {
 	Summary    string           `json:"summary"`
 }
 
-const llmBatchSize = 4 // candidates per goroutine; smaller batches = more parallelism = faster
+const llmBatchSize = 8 // single call for up to 8 candidates — fast + consistent cross-candidate scoring
 
 // ScoreCandidates sends candidates to LLM for scoring using parallel batches.
 // communitySummaries contains LLM-generated summaries of the most relevant graph communities
@@ -63,60 +62,24 @@ func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidate
 		return cachedScores, nil
 	}
 
-	// Split candidates into batches
-	var batches [][]FusedCandidate
-	for i := 0; i < len(candidates); i += llmBatchSize {
-		end := i + llmBatchSize
-		if end > len(candidates) {
-			end = len(candidates)
-		}
-		batches = append(batches, candidates[i:end])
+	log.Printf("[LLMScorer] Scoring %d candidates in a single call for consistent ranking", len(candidates))
+
+	prompt := s.buildScoringPrompt(query, candidates, communitySummaries)
+	response, err := s.llm.Generate(prompt)
+	if err != nil {
+		return nil, fmt.Errorf("LLM scoring call failed: %w", err)
 	}
-
-	log.Printf("[LLMScorer] Scoring %d candidates in %d parallel batch(es) of up to %d", len(candidates), len(batches), llmBatchSize)
-
-	type batchResult struct {
-		scores []CandidateScore
-		err    error
+	parsed, err := s.parseScoreResponse(response)
+	if err != nil {
+		return nil, fmt.Errorf("LLM score parse failed: %w", err)
 	}
-	results := make([]batchResult, len(batches))
-	var wg sync.WaitGroup
-
-	for i, batch := range batches {
-		wg.Add(1)
-		go func(idx int, b []FusedCandidate) {
-			defer wg.Done()
-			prompt := s.buildScoringPrompt(query, b, communitySummaries)
-			response, err := s.llm.Generate(prompt)
-			if err != nil {
-				results[idx] = batchResult{err: fmt.Errorf("batch %d LLM call failed: %w", idx, err)}
-				return
-			}
-			parsed, err := s.parseScoreResponse(response)
-			if err != nil {
-				results[idx] = batchResult{err: fmt.Errorf("batch %d parse failed: %w", idx, err)}
-				return
-			}
-			results[idx] = batchResult{scores: parsed.Candidates}
-		}(i, batch)
-	}
-
-	wg.Wait()
-
-	var allScores []CandidateScore
-	for i, r := range results {
-		if r.err != nil {
-			log.Printf("[LLMScorer] Batch %d failed: %v", i, r.err)
-			continue
-		}
-		allScores = append(allScores, r.scores...)
-	}
+	allScores := parsed.Candidates
 
 	if len(allScores) == 0 {
-		return nil, fmt.Errorf("all LLM scoring batches failed")
+		return nil, fmt.Errorf("LLM returned no scores")
 	}
 
-	log.Printf("[LLMScorer] Successfully scored %d candidates across %d batch(es)", len(allScores), len(batches))
+	log.Printf("[LLMScorer] Successfully scored %d candidates in a single call", len(allScores))
 
 	// Cache the combined results
 	s.cache.Set(query, candidateIDs, allScores)
@@ -124,130 +87,47 @@ func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidate
 	return allScores, nil
 }
 
-// buildScoringPrompt creates a detailed prompt for LLM scoring
-func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate, communitySummaries []string) string {
-	prompt := fmt.Sprintf(`You are an expert technical recruiter. Score each candidate for this job query.
+// buildScoringPrompt creates a lean, HR-focused ranking prompt.
+// No hardcoded role rules — LLM evaluates fit based on skills, title, and experience.
+func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate, _ []string) string {
+	var b strings.Builder
 
-**Job Query:** %s
+	b.WriteString("You are a senior technical recruiter. Score each candidate for the following role.\n\n")
+	b.WriteString("Role: " + query + "\n\n")
+	b.WriteString("Scoring (0-100):\n")
+	b.WriteString("- Skills match: does their tech stack align with the role? (most important)\n")
+	b.WriteString("- Title match: does their current or past role reflect the position?\n")
+	b.WriteString("- Experience: years of relevant hands-on work\n\n")
+	b.WriteString("Candidates:\n")
 
-**Your Task:**
-1. Evaluate each candidate's match quality (0-100 score)
-2. Provide confidence level (0-1)
-3. Explain your reasoning with specific details (IMPORTANT: mention years of experience for key skills)
-4. List key evidence (skills with years, experience, etc.)
-5. Assign fit level: excellent/good/fair/poor
-
-**Scoring Guidelines:**
-- 90-100: Perfect match - Community match + senior experience (8+ years) in domain
-- 80-89: Strong match - Community match + solid experience (5-7 years)
-- 70-79: Good match - Community match + junior/mid experience (3-4 years) OR direct job title match with less community fit
-- 60-69: Acceptable match - Community match + very junior (1-2 years) OR related position without community match
-- 40-59: Fair match - Some overlap in skills/experience but weak community fit
-- 0-39: Poor match - Wrong domain and insufficient skills
-
-**Evaluation Criteria (in order of importance):**
-1. **Community Match:** Is the candidate in the right professional community for this role?
-2. **Years of Experience:** How much relevant experience do they have? (THIS IS THE PRIMARY DIFFERENTIATOR when communities match!)
-3. **Job Title Match:** Does their current position match what's being searched?
-4. **Skill Relevance:** Do their skills match the job requirements?
-
-**CRITICAL SCORING RULES:**
-- **When candidates are in the SAME community, ALWAYS give higher score to the one with MORE years of experience**
-- Experience should create clear score separation (e.g., 12 yrs = 85-90, 4 yrs = 70-75, 3 yrs = 65-70)
-- Job title match is SECONDARY to experience when community matches
-- Example 1: "Product Lead" (analyst, 12 yrs) should score 85-90, "Business Analyst" (analyst, 4 yrs) should score 70-75
-- Example 2: "Product Owner & BA" (analyst, 3 yrs) should score 65-70, less than someone with 4+ years in same community
-
-**IMPORTANT:** Skills are listed with proficiency levels and years of experience (e.g., "Java (Expert, 13 yrs)"). 
-Pay close attention to CURRENT POSITION, COMMUNITY MEMBERSHIP, and years of experience when scoring.
-
-**Community Definitions:**
-- "analyst": Business Analysts, Product Owners, Product Managers, Data Analysts
-- "backend": Backend Developers, API Engineers, Microservices Engineers
-- "frontend": Frontend Developers, UI Engineers, React/Vue developers
-- "mobile": iOS/Android developers, React Native developers
-- "data": Data Engineers, Data Scientists, ML Engineers
-- "devops": DevOps Engineers, SRE, Infrastructure Engineers
-- "qa-test": QA Engineers, Test Automation Engineers
-
-**Candidates:**
-`, query)
-
-	// Inject global graph community context (GraphRAG global search style)
-	// These are LLM-generated summaries of the communities most relevant to this query.
-	if len(communitySummaries) > 0 {
-		prompt += "\n**Graph Community Context (from knowledge graph):**\n"
-		prompt += "The following summaries describe the professional communities most relevant to this search.\n"
-		prompt += "Use this to better understand the domain landscape when scoring:\n"
-		for i, summary := range communitySummaries {
-			prompt += fmt.Sprintf("- Community %d: %s\n", i+1, summary)
-		}
-		prompt += "\n"
-	}
-
-	// Add candidate details
 	for i, c := range candidates {
-		skills := skillNames(c.Skills)
-		companies := companyNames(c.Companies)
-
-		// Format community scores
-		communityInfo := "No strong community match"
-		if c.Community != "" {
-			if len(c.Communities) > 0 {
-				communityInfo = fmt.Sprintf("Primary: %s, All communities: %v", c.Community, c.Communities)
-			} else {
-				communityInfo = fmt.Sprintf("Primary: %s", c.Community)
-			}
-		}
-
-		// Build graph-computed community context for this specific candidate
-		computedCommunityLine := ""
-		if c.ComputedCommunitySummary != "" {
-			computedCommunityLine = fmt.Sprintf("\n- **GRAPH COMMUNITY (computed):** %s", c.ComputedCommunitySummary)
-		}
-
-		prompt += fmt.Sprintf(`
----
-Candidate %d:
-- Person ID: %s
-- Name: %s
-- **CURRENT POSITION: %s** (This is their actual job title - very important for matching!)
-- **COMMUNITY MEMBERSHIP: %s** (Shows their professional domain - VERY important!)%s
-- Seniority: %s (%d years total experience)
-- Top Skills: %v
-- Work History: %v
-- Fusion Score: %.2f (Pre-LLM ranking: #%d)
-
-`, i+1, c.PersonID, c.Name, c.CurrentPosition, communityInfo, computedCommunityLine,
-			c.Seniority, c.TotalExperienceYears,
-			skills, companies,
-			c.FusionScore, c.Rank)
+		b.WriteString(fmt.Sprintf("\n[%d] person_id: %s\n", i+1, c.PersonID))
+		b.WriteString(fmt.Sprintf("  Title: %s | Seniority: %s | Experience: %d yrs\n",
+			c.CurrentPosition, c.Seniority, c.TotalExperienceYears))
+		b.WriteString(fmt.Sprintf("  Skills: %s\n", skillNames(c.Skills)))
+		b.WriteString(fmt.Sprintf("  Work history: %s\n", companyNames(c.Companies)))
 	}
 
-	prompt += `
-**Response Format (JSON):**
+	b.WriteString(`
+Return ONLY valid JSON, no markdown:
 {
   "candidates": [
     {
       "person_id": "person_xxx",
-      "score": 85.5,
+      "score": 85,
       "confidence": 0.9,
-      "reasoning": "Strong backend experience with Go and microservices. 5+ years in fintech.",
-      "evidence": ["Go expert", "Worked at major bank", "Led migration to microservices"],
+      "reasoning": "One sentence explanation.",
+      "evidence": ["key fact 1", "key fact 2"],
       "fit": "excellent"
     }
   ],
-  "summary": "Found 3 strong candidates with relevant banking and Go experience."
+  "summary": "One sentence overall summary."
 }
+fit values: excellent (80+) / good (60-79) / fair (40-59) / poor (<40)
+Score ALL candidates. Return ONLY JSON.
+`)
 
-**Important:**
-- Score ALL candidates in the list
-- Be objective and evidence-based
-- Consider: technical skills, experience relevance, seniority match
-- Return ONLY valid JSON, no markdown formatting
-`
-
-	return prompt
+	return b.String()
 }
 
 // parseScoreResponse extracts structured scores from LLM response

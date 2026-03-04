@@ -80,10 +80,10 @@ type HybridSearchConfig struct {
 func DefaultHybridConfig() HybridSearchConfig {
 	return HybridSearchConfig{
 		BM25Weight:         0.0, // BM25 disabled (candidates table not used)
-		VectorWeight:       0.6, // Increased from 0.4
-		GraphWeight:        0.4, // Increased from 0.3
+		VectorWeight:       0.6,
+		GraphWeight:        0.4,
 		TopK:               100,
-		FinalTopN:          15, // Two-Stage Retrieval: 100 → fusion → top 15 → LLM (was 0 = unlimited)
+		FinalTopN:          8, // Retrieval: 100 → fusion → top 8 → single LLM call (fast + consistent)
 		UseCommunityFilter: false,
 		CommunityThreshold: 50,
 	}
@@ -112,7 +112,12 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	// Step 1: Parallel retrieval from 3 sources
 	bm25ResultsChan := make(chan []BM25Result)
 	vectorResultsChan := make(chan []VectorSearchResult)
-	graphResultsChan := make(chan []CandidateResult)
+
+	type graphSearchResult struct {
+		criteria *SearchCriteria
+		results  []CandidateResult
+	}
+	graphResultsChan := make(chan graphSearchResult)
 	errChan := make(chan error, 3)
 
 	// BM25 search
@@ -149,13 +154,13 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		vectorResultsChan <- results
 	}()
 
-	// Graph search (needs criteria extraction first)
+	// Graph search (needs criteria extraction first; sends criteria alongside results for post-fusion filtering)
 	go func() {
 		analyzer := NewQueryAnalyzer(h.llm)
 		criteria, err := analyzer.AnalyzeQuery(ctx, query)
 		if err != nil {
 			log.Printf("[HybridSearch] Graph search skipped (criteria extraction failed): %v", err)
-			graphResultsChan <- []CandidateResult{}
+			graphResultsChan <- graphSearchResult{criteria: &SearchCriteria{}, results: []CandidateResult{}}
 			return
 		}
 
@@ -164,13 +169,14 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 			errChan <- fmt.Errorf("graph failed: %w", err)
 			return
 		}
-		graphResultsChan <- results
+		graphResultsChan <- graphSearchResult{criteria: criteria, results: results}
 	}()
 
 	// Wait for all results
 	var bm25Results []BM25Result
 	var vectorResults []VectorSearchResult
 	var graphResults []CandidateResult
+	var searchCriteria *SearchCriteria
 
 	for i := 0; i < 3; i++ {
 		select {
@@ -178,7 +184,9 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 			log.Printf("[HybridSearch] BM25 returned %d results", len(bm25Results))
 		case vectorResults = <-vectorResultsChan:
 			log.Printf("[HybridSearch] Vector returned %d results", len(vectorResults))
-		case graphResults = <-graphResultsChan:
+		case gr := <-graphResultsChan:
+			graphResults = gr.results
+			searchCriteria = gr.criteria
 			log.Printf("[HybridSearch] Graph returned %d results", len(graphResults))
 		case err := <-errChan:
 			return nil, err
@@ -190,6 +198,33 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 
 	// Step 2.5: Enrich candidates with full details (skills, companies, computed communities)
 	h.enrichCandidates(ctx, fusedCandidates)
+
+	// Step 2.55: Post-fusion skill filter.
+	// Vector search returns semantically similar CVs regardless of tech stack.
+	// If the query specifies skills, remove candidates who have none of them —
+	// they are noise picked up by vector similarity alone.
+	if searchCriteria != nil && len(searchCriteria.Skills) > 0 {
+		requiredSkills := make(map[string]bool, len(searchCriteria.Skills))
+		for _, s := range searchCriteria.Skills {
+			requiredSkills[strings.ToLower(s)] = true
+		}
+		skillFiltered := fusedCandidates[:0]
+		for _, c := range fusedCandidates {
+			for _, sk := range c.Skills {
+				if requiredSkills[strings.ToLower(sk.Name)] {
+					skillFiltered = append(skillFiltered, c)
+					break
+				}
+			}
+		}
+		if len(skillFiltered) > 0 {
+			log.Printf("[HybridSearch] Skill post-filter: %d → %d candidates (kept skill-relevant only)",
+				len(fusedCandidates), len(skillFiltered))
+			fusedCandidates = skillFiltered
+		} else {
+			log.Printf("[HybridSearch] Skill post-filter matched 0 candidates, skipping filter")
+		}
+	}
 
 	// Step 2.6: Fetch global community context for this query (for LLM scoring context)
 	var queryCommunityContext []string

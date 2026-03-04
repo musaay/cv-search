@@ -183,6 +183,58 @@ func (q *GraphQuerier) buildQuery(criteria *SearchCriteria) (string, []interface
 		conditions = append(conditions, "("+strings.Join(companyConditions, " OR ")+")")
 	}
 
+	// Filter by positions.
+	// Each position phrase is matched with AND logic across its words (all must appear),
+	// but multiple positions are OR-ed together.
+	// Generic words (developer, engineer, etc.) are skipped to avoid over-broad matches.
+	// Result: "Python Developer" → current_position must contain "Python"
+	//          "iOS Developer"   → current_position must contain "iOS"
+	genericPositionWords := map[string]bool{
+		"developer": true, "engineer": true, "software": true, "senior": true,
+		"junior": true, "mid-level": true, "mid": true, "lead": true,
+		"architect": true, "specialist": true, "manager": true, "consultant": true,
+		"expert": true, "staff": true, "principal": true, "associate": true,
+	}
+	if len(criteria.Positions) > 0 {
+		perPositionConditions := []string{}
+		for _, pos := range criteria.Positions {
+			specificWords := []string{}
+			for _, word := range strings.Fields(pos) {
+				if len(word) <= 2 {
+					continue
+				}
+				if genericPositionWords[strings.ToLower(word)] {
+					continue
+				}
+				specificWords = append(specificWords, word)
+			}
+			if len(specificWords) == 0 {
+				continue // tüm kelimeler generic ise bu position'ı atla
+			}
+			// All specific words must match (AND within one position)
+			wordConditions := []string{}
+			for _, word := range specificWords {
+				wordConditions = append(wordConditions, fmt.Sprintf(`
+					(p.properties->>'current_position' ILIKE $%d
+					 OR EXISTS (
+						SELECT 1 FROM graph_edges e2
+						JOIN graph_nodes c2 ON e2.target_node_id = c2.id
+						WHERE e2.source_node_id = p.id
+						  AND e2.edge_type IN ('WORKS_AT', 'WORKED_AT')
+						  AND c2.properties->>'position' ILIKE $%d
+					 ))
+				`, argIndex, argIndex))
+				args = append(args, fmt.Sprintf("%%%s%%", word))
+				argIndex++
+			}
+			perPositionConditions = append(perPositionConditions,
+				"("+strings.Join(wordConditions, " AND ")+")")
+		}
+		if len(perPositionConditions) > 0 {
+			conditions = append(conditions, "("+strings.Join(perPositionConditions, " OR ")+")")
+		}
+	}
+
 	// Filter by education
 	if len(criteria.Education) > 0 {
 		eduConditions := []string{}
