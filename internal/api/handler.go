@@ -79,7 +79,7 @@ type API struct {
 	hybridSearchEngine   *graphrag.HybridSearchEngine   // BM25 + Vector + Graph + LLM reranking
 	cvProcessingQueue    chan CVProcessingJob           // Background queue for async CV processing (LLM + Graph)
 	embeddingQueue       chan EmbeddingJob              // Background queue for async embedding generation
-	batchStore           *BatchStore                   // In-memory store for bulk upload batches
+	batchStore           *BatchStore                    // In-memory store for bulk upload batches
 }
 
 func NewAPI(db *storage.DB) *API {

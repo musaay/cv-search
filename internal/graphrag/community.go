@@ -12,14 +12,16 @@ import (
 
 // CommunityDetector implements Leiden algorithm for community detection
 type CommunityDetector struct {
-	db  *sql.DB
-	llm LLMClient
+	db               *sql.DB
+	llm              LLMClient
+	embeddingService *EmbeddingService
 }
 
-func NewCommunityDetector(db *sql.DB, llm LLMClient) *CommunityDetector {
+func NewCommunityDetector(db *sql.DB, llm LLMClient, embeddingService *EmbeddingService) *CommunityDetector {
 	return &CommunityDetector{
-		db:  db,
-		llm: llm,
+		db:               db,
+		llm:              llm,
+		embeddingService: embeddingService,
 	}
 }
 
@@ -314,44 +316,101 @@ func (cd *CommunityDetector) generateCommunityTitle(memberIDs []int, graph *Grap
 
 // generateCommunitySummaries uses LLM to create summaries for each community
 func (cd *CommunityDetector) generateCommunitySummaries(ctx context.Context, level int) error {
-	rows, err := cd.db.QueryContext(ctx, `
-		SELECT c.id, c.community_id, c.title,
-		       ARRAY_AGG(gn.node_type) as types,
-		       ARRAY_AGG(gn.properties) as properties
-		FROM graph_communities c
-		JOIN community_members cm ON c.id = cm.community_id
-		JOIN graph_nodes gn ON cm.node_id = gn.id
-		WHERE c.level = $1
-		GROUP BY c.id, c.community_id, c.title
+	// Step 1: Get all community IDs at this level
+	communityRows, err := cd.db.QueryContext(ctx, `
+		SELECT id, community_id, title FROM graph_communities WHERE level = $1
 	`, level)
-
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var id int
-		var communityID, title string
+	type communityMeta struct {
+		id          int
+		communityID string
+		title       string
+	}
+	var communities []communityMeta
+	for communityRows.Next() {
+		var c communityMeta
+		if err := communityRows.Scan(&c.id, &c.communityID, &c.title); err != nil {
+			continue
+		}
+		communities = append(communities, c)
+	}
+	communityRows.Close()
+
+	log.Printf("[Community Detection] Generating summaries for %d communities", len(communities))
+
+	// Step 2: For each community, load members and generate summary
+	for _, c := range communities {
+		memberRows, err := cd.db.QueryContext(ctx, `
+			SELECT gn.node_type, gn.properties
+			FROM community_members cm
+			JOIN graph_nodes gn ON cm.node_id = gn.id
+			WHERE cm.community_id = $1
+			LIMIT 20
+		`, c.id)
+		if err != nil {
+			log.Printf("[Community Detection] Failed to load members for community %s: %v", c.communityID, err)
+			continue
+		}
+
 		var types []string
 		var properties [][]byte
+		for memberRows.Next() {
+			var nodeType string
+			var propsJSON []byte
+			if err := memberRows.Scan(&nodeType, &propsJSON); err != nil {
+				continue
+			}
+			types = append(types, nodeType)
+			properties = append(properties, propsJSON)
+		}
+		memberRows.Close()
 
-		if err := rows.Scan(&id, &communityID, &title, &types, &properties); err != nil {
+		if len(types) == 0 {
+			log.Printf("[Community Detection] Community %s has no members, skipping", c.communityID)
 			continue
 		}
 
 		// Generate summary with LLM
-		summary := cd.generateSummaryWithLLM(title, types, properties)
+		log.Printf("[Community Detection] Generating LLM summary for community %s (%d members)", c.communityID, len(types))
+		summary := cd.generateSummaryWithLLM(c.title, types, properties)
 
 		// Update community with summary
-		_, err := cd.db.ExecContext(ctx, `
+		_, err = cd.db.ExecContext(ctx, `
 			UPDATE graph_communities 
 			SET summary = $1, updated_at = NOW()
 			WHERE id = $2
-		`, summary, id)
-
+		`, summary, c.id)
 		if err != nil {
-			log.Printf("[Community Detection] Failed to update summary: %v", err)
+			log.Printf("[Community Detection] Failed to update summary for %s: %v", c.communityID, err)
+			continue
+		}
+
+		// Generate and store embedding so it can be used in vector-based community search
+		embeddingText := fmt.Sprintf("%s: %s", c.title, summary)
+		var embeddingJSON []byte
+		if cd.embeddingService != nil {
+			vecEmbedding, embErr := cd.embeddingService.GenerateEmbedding(ctx, embeddingText)
+			if embErr != nil {
+				log.Printf("[Community Detection] Failed to generate embedding for community %s (non-fatal): %v", c.communityID, embErr)
+				continue
+			}
+			embeddingJSON, _ = json.Marshal(vecEmbedding)
+		} else {
+			log.Printf("[Community Detection] No embedding service, skipping embedding for community %s", c.communityID)
+			continue
+		}
+		_, embUpdateErr := cd.db.ExecContext(ctx, `
+			UPDATE graph_communities
+			SET embedding = $1::vector, updated_at = NOW()
+			WHERE id = $2
+		`, string(embeddingJSON), c.id)
+		if embUpdateErr != nil {
+			log.Printf("[Community Detection] Failed to store embedding for community %s (non-fatal): %v", c.communityID, embUpdateErr)
+		} else {
+			log.Printf("[Community Detection] Community %s: summary + embedding stored", c.communityID)
 		}
 	}
 

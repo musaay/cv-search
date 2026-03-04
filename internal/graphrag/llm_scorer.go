@@ -44,8 +44,10 @@ type LLMScoreResponse struct {
 const llmBatchSize = 4 // candidates per goroutine; smaller batches = more parallelism = faster
 
 // ScoreCandidates sends candidates to LLM for scoring using parallel batches.
+// communitySummaries contains LLM-generated summaries of the most relevant graph communities
+// for this query — used as global context (GraphRAG global search style).
 // Returns scored and sorted candidates.
-func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidates []FusedCandidate) ([]CandidateScore, error) {
+func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidates []FusedCandidate, communitySummaries []string) ([]CandidateScore, error) {
 	if len(candidates) == 0 {
 		return []CandidateScore{}, nil
 	}
@@ -84,7 +86,7 @@ func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidate
 		wg.Add(1)
 		go func(idx int, b []FusedCandidate) {
 			defer wg.Done()
-			prompt := s.buildScoringPrompt(query, b)
+			prompt := s.buildScoringPrompt(query, b, communitySummaries)
 			response, err := s.llm.Generate(prompt)
 			if err != nil {
 				results[idx] = batchResult{err: fmt.Errorf("batch %d LLM call failed: %w", idx, err)}
@@ -123,7 +125,7 @@ func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidate
 }
 
 // buildScoringPrompt creates a detailed prompt for LLM scoring
-func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate) string {
+func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate, communitySummaries []string) string {
 	prompt := fmt.Sprintf(`You are an expert technical recruiter. Score each candidate for this job query.
 
 **Job Query:** %s
@@ -171,6 +173,18 @@ Pay close attention to CURRENT POSITION, COMMUNITY MEMBERSHIP, and years of expe
 **Candidates:**
 `, query)
 
+	// Inject global graph community context (GraphRAG global search style)
+	// These are LLM-generated summaries of the communities most relevant to this query.
+	if len(communitySummaries) > 0 {
+		prompt += "\n**Graph Community Context (from knowledge graph):**\n"
+		prompt += "The following summaries describe the professional communities most relevant to this search.\n"
+		prompt += "Use this to better understand the domain landscape when scoring:\n"
+		for i, summary := range communitySummaries {
+			prompt += fmt.Sprintf("- Community %d: %s\n", i+1, summary)
+		}
+		prompt += "\n"
+	}
+
 	// Add candidate details
 	for i, c := range candidates {
 		skills := skillNames(c.Skills)
@@ -186,19 +200,26 @@ Pay close attention to CURRENT POSITION, COMMUNITY MEMBERSHIP, and years of expe
 			}
 		}
 
+		// Build graph-computed community context for this specific candidate
+		computedCommunityLine := ""
+		if c.ComputedCommunitySummary != "" {
+			computedCommunityLine = fmt.Sprintf("\n- **GRAPH COMMUNITY (computed):** %s", c.ComputedCommunitySummary)
+		}
+
 		prompt += fmt.Sprintf(`
 ---
 Candidate %d:
 - Person ID: %s
 - Name: %s
 - **CURRENT POSITION: %s** (This is their actual job title - very important for matching!)
-- **COMMUNITY MEMBERSHIP: %s** (Shows their professional domain - VERY important!)
+- **COMMUNITY MEMBERSHIP: %s** (Shows their professional domain - VERY important!)%s
 - Seniority: %s (%d years total experience)
 - Top Skills: %v
 - Work History: %v
 - Fusion Score: %.2f (Pre-LLM ranking: #%d)
 
-`, i+1, c.PersonID, c.Name, c.CurrentPosition, communityInfo, c.Seniority, c.TotalExperienceYears,
+`, i+1, c.PersonID, c.Name, c.CurrentPosition, communityInfo, computedCommunityLine,
+			c.Seniority, c.TotalExperienceYears,
 			skills, companies,
 			c.FusionScore, c.Rank)
 	}

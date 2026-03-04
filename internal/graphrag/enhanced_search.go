@@ -23,7 +23,7 @@ func NewEnhancedSearchEngine(db *sql.DB, llm LLMClient, embeddingAPIKey string) 
 		db:                db,
 		llm:               llm,
 		embeddingService:  NewEmbeddingService(embeddingAPIKey, db),
-		communityDetector: NewCommunityDetector(db, llm),
+		communityDetector: NewCommunityDetector(db, llm, NewEmbeddingService(embeddingAPIKey, db)),
 	}
 }
 

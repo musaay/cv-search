@@ -37,24 +37,26 @@ func NewHybridSearchEngine(db *sql.DB, llm LLMClient, openaiKey string) *HybridS
 
 // FusedCandidate represents a candidate with scores from multiple sources
 type FusedCandidate struct {
-	CandidateID          int
-	PersonID             string // Graph uses string IDs
-	Name                 string
-	CurrentPosition      string
-	Seniority            string
-	TotalExperienceYears int
-	Skills               []SkillNode
-	Companies            []CompanyNode
-	Community            string             // Primary community
-	Communities          []string           // All matching communities (Microsoft GraphRAG style)
-	CommunityScores      map[string]float64 // Normalized scores for each community
-	BM25Score            float64            // 0-1 normalized
-	VectorScore          float64            // 0-1 normalized
-	GraphScore           float64            // 0-1 normalized
-	FusionScore          float64            // Weighted combination
-	LLMScore             float64            // Final LLM reranking score (0-100)
-	LLMReasoning         string
-	Rank                 int
+	CandidateID              int
+	PersonID                 string // Graph uses string IDs
+	Name                     string
+	CurrentPosition          string
+	Seniority                string
+	TotalExperienceYears     int
+	Skills                   []SkillNode
+	Companies                []CompanyNode
+	Community                string             // Primary community
+	Communities              []string           // All matching communities (Microsoft GraphRAG style)
+	CommunityScores          map[string]float64 // Normalized scores for each community
+	ComputedCommunityID      string             // ID of the graph-computed community this person belongs to
+	ComputedCommunitySummary string             // LLM summary of that community
+	BM25Score                float64            // 0-1 normalized
+	VectorScore              float64            // 0-1 normalized
+	GraphScore               float64            // 0-1 normalized
+	FusionScore              float64            // Weighted combination
+	LLMScore                 float64            // Final LLM reranking score (0-100)
+	LLMReasoning             string
+	Rank                     int
 }
 
 // VectorSearchResult represents a candidate from vector search
@@ -186,10 +188,19 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	// Step 2: Fuse results using RRF (Reciprocal Rank Fusion)
 	fusedCandidates := h.fuseResults(bm25Results, vectorResults, graphResults, config)
 
-	// Step 2.5: Enrich candidates with full details (skills, companies, etc.)
+	// Step 2.5: Enrich candidates with full details (skills, companies, computed communities)
 	h.enrichCandidates(ctx, fusedCandidates)
 
-	// Step 2.6: Community-based filtering (if enabled) - Microsoft GraphRAG style
+	// Step 2.6: Fetch global community context for this query (for LLM scoring context)
+	var queryCommunityContext []string
+	if queryEmbedding != nil {
+		queryCommunityContext = h.fetchQueryCommunities(ctx, queryEmbedding)
+		if len(queryCommunityContext) > 0 {
+			log.Printf("[HybridSearch] Found %d relevant graph communities for query context", len(queryCommunityContext))
+		}
+	}
+
+	// Step 2.7: Community-based filtering (if enabled) - Microsoft GraphRAG style
 	shouldUseCommunityFilter := config.UseCommunityFilter || len(fusedCandidates) >= config.CommunityThreshold
 	if shouldUseCommunityFilter && len(fusedCandidates) > 0 {
 		// Infer relevant communities from query
@@ -235,7 +246,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	log.Printf("[HybridSearch] Fusion complete. Top %d candidates ready for LLM reranking", len(fusedCandidates))
 
 	// Step 4: LLM Reranking — persistent scorer keeps its cache alive across requests
-	llmScores, err := h.scorer.ScoreCandidates(ctx, query, fusedCandidates)
+	llmScores, err := h.scorer.ScoreCandidates(ctx, query, fusedCandidates, queryCommunityContext)
 	if err != nil {
 		log.Printf("[HybridSearch] LLM scoring failed, returning fusion scores: %v", err)
 		// Fallback: use fusion scores
@@ -294,7 +305,47 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	}
 
 	return validCandidates, nil
-} // fuseResults combines results using weighted scoring
+}
+
+// fetchQueryCommunities finds the most relevant graph-computed communities for a query
+// using vector similarity. Returns community summaries to use as global LLM context.
+func (h *HybridSearchEngine) fetchQueryCommunities(ctx context.Context, embedding []float32) []string {
+	if len(embedding) == 0 {
+		return nil
+	}
+
+	embeddingJSON, err := json.Marshal(embedding)
+	if err != nil {
+		return nil
+	}
+
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT summary
+		FROM graph_communities
+		WHERE embedding IS NOT NULL AND level = 0
+		ORDER BY embedding <=> $1::vector
+		LIMIT 3
+	`, string(embeddingJSON))
+	if err != nil {
+		log.Printf("[HybridSearch] fetchQueryCommunities failed (non-fatal): %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var summaries []string
+	for rows.Next() {
+		var summary sql.NullString
+		if err := rows.Scan(&summary); err != nil {
+			continue
+		}
+		if summary.Valid && summary.String != "" {
+			summaries = append(summaries, summary.String)
+		}
+	}
+	return summaries
+}
+
+// fuseResults combines results using weighted scoring
 func (h *HybridSearchEngine) fuseResults(
 	bm25 []BM25Result,
 	vector []VectorSearchResult,
@@ -615,7 +666,46 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 		}
 	}
 
-	// Assign communities (after skills are loaded)
+	// BATCH 4: Load computed community from graph_communities (the real Leiden-computed communities)
+	if len(personIDs) > 0 {
+		communityMemberQuery := fmt.Sprintf(`
+			SELECT p.node_id, gc.community_id, gc.summary
+			FROM graph_nodes p
+			JOIN community_members cm ON p.id = cm.node_id
+			JOIN graph_communities gc ON cm.community_id = gc.id
+			WHERE p.node_id IN %s
+			  AND p.node_type = 'person'
+			  AND gc.summary IS NOT NULL
+			ORDER BY gc.node_count DESC
+		`, inClause)
+
+		communityRows, err := h.db.QueryContext(ctx, communityMemberQuery, personIDs...)
+		if err != nil {
+			log.Printf("[HybridSearch] Failed to batch load computed communities (non-fatal): %v", err)
+		} else {
+			defer communityRows.Close()
+			for communityRows.Next() {
+				var personID, communityID string
+				var summary sql.NullString
+				if err := communityRows.Scan(&personID, &communityID, &summary); err != nil {
+					continue
+				}
+				idx, ok := personIDToIndex[personID]
+				if !ok {
+					continue
+				}
+				// Only set if not already set (keep the highest node_count community due to ORDER BY)
+				if candidates[idx].ComputedCommunityID == "" {
+					candidates[idx].ComputedCommunityID = communityID
+					if summary.Valid {
+						candidates[idx].ComputedCommunitySummary = summary.String
+					}
+				}
+			}
+		}
+	}
+
+	// Assign keyword-based communities (fallback; used for community filter)
 	// Only compute if not already set from database
 	for i := range candidates {
 		if candidates[i].Community == "" && len(candidates[i].Skills) > 0 {

@@ -31,23 +31,25 @@ type HybridSearchResponse struct {
 
 // FusedCandidateResponse represents a candidate with all scores
 type FusedCandidateResponse struct {
-	PersonID             string                 `json:"person_id"`
-	Name                 string                 `json:"name"`
-	CurrentPosition      string                 `json:"current_position,omitempty"`
-	Seniority            string                 `json:"seniority,omitempty"`
-	TotalExperienceYears int                    `json:"total_experience_years,omitempty"`
-	Skills               []graphrag.SkillNode   `json:"skills,omitempty"`
-	Companies            []graphrag.CompanyNode `json:"companies,omitempty"`
-	Community            string                 `json:"community,omitempty"`        // Primary community
-	Communities          []string               `json:"communities,omitempty"`      // All matching communities
-	CommunityScores      map[string]float64     `json:"community_scores,omitempty"` // Score for each community
-	BM25Score            float64                `json:"bm25_score"`
-	VectorScore          float64                `json:"vector_score"`
-	GraphScore           float64                `json:"graph_score"`
-	FusionScore          float64                `json:"fusion_score"`
-	LLMScore             float64                `json:"llm_score"`
-	LLMReasoning         string                 `json:"llm_reasoning,omitempty"`
-	Rank                 int                    `json:"rank"`
+	PersonID                 string                 `json:"person_id"`
+	Name                     string                 `json:"name"`
+	CurrentPosition          string                 `json:"current_position,omitempty"`
+	Seniority                string                 `json:"seniority,omitempty"`
+	TotalExperienceYears     int                    `json:"total_experience_years,omitempty"`
+	Skills                   []graphrag.SkillNode   `json:"skills,omitempty"`
+	Companies                []graphrag.CompanyNode `json:"companies,omitempty"`
+	Community                string                 `json:"community,omitempty"`                  // Primary keyword-based community
+	Communities              []string               `json:"communities,omitempty"`                // All matching communities
+	CommunityScores          map[string]float64     `json:"community_scores,omitempty"`           // Score for each community
+	ComputedCommunityID      string                 `json:"computed_community_id,omitempty"`      // Graph-computed (Leiden) community ID
+	ComputedCommunitySummary string                 `json:"computed_community_summary,omitempty"` // LLM summary of that community
+	BM25Score                float64                `json:"bm25_score"`
+	VectorScore              float64                `json:"vector_score"`
+	GraphScore               float64                `json:"graph_score"`
+	FusionScore              float64                `json:"fusion_score"`
+	LLMScore                 float64                `json:"llm_score"`
+	LLMReasoning             string                 `json:"llm_reasoning,omitempty"`
+	Rank                     int                    `json:"rank"`
 }
 
 // HybridSearchHandler handles hybrid search requests
@@ -128,23 +130,25 @@ func (a *API) HybridSearchHandler(w http.ResponseWriter, r *http.Request) {
 	var candidates []FusedCandidateResponse
 	for _, c := range results {
 		candidates = append(candidates, FusedCandidateResponse{
-			PersonID:             c.PersonID,
-			Name:                 c.Name,
-			CurrentPosition:      c.CurrentPosition,
-			Seniority:            c.Seniority,
-			TotalExperienceYears: c.TotalExperienceYears,
-			Skills:               c.Skills,
-			Companies:            c.Companies,
-			Community:            c.Community,
-			Communities:          c.Communities,
-			CommunityScores:      c.CommunityScores,
-			BM25Score:            c.BM25Score,
-			VectorScore:          c.VectorScore,
-			GraphScore:           c.GraphScore,
-			FusionScore:          c.FusionScore,
-			LLMScore:             c.LLMScore,
-			LLMReasoning:         c.LLMReasoning,
-			Rank:                 c.Rank,
+			PersonID:                 c.PersonID,
+			Name:                     c.Name,
+			CurrentPosition:          c.CurrentPosition,
+			Seniority:                c.Seniority,
+			TotalExperienceYears:     c.TotalExperienceYears,
+			Skills:                   c.Skills,
+			Companies:                c.Companies,
+			Community:                c.Community,
+			Communities:              c.Communities,
+			CommunityScores:          c.CommunityScores,
+			ComputedCommunityID:      c.ComputedCommunityID,
+			ComputedCommunitySummary: c.ComputedCommunitySummary,
+			BM25Score:                c.BM25Score,
+			VectorScore:              c.VectorScore,
+			GraphScore:               c.GraphScore,
+			FusionScore:              c.FusionScore,
+			LLMScore:                 c.LLMScore,
+			LLMReasoning:             c.LLMReasoning,
+			Rank:                     c.Rank,
 		})
 	}
 
