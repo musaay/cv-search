@@ -40,7 +40,7 @@ type LLMScoreResponse struct {
 	Summary    string           `json:"summary"`
 }
 
-const llmBatchSize = 8 // single call for up to 8 candidates — fast + consistent cross-candidate scoring
+const llmBatchSize = 8 // single call; skill searches may send more, skill-less capped at FinalTopN=8
 
 // ScoreCandidates sends candidates to LLM for scoring using parallel batches.
 // communitySummaries contains LLM-generated summaries of the most relevant graph communities
@@ -95,9 +95,9 @@ func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate
 	b.WriteString("You are a senior technical recruiter. Score each candidate for the following role.\n\n")
 	b.WriteString("Role: " + query + "\n\n")
 	b.WriteString("Scoring (0-100):\n")
-	b.WriteString("- Skills match: does their tech stack align with the role? (most important)\n")
-	b.WriteString("- Title match: does their current or past role reflect the position?\n")
-	b.WriteString("- Experience: years of relevant hands-on work\n\n")
+	b.WriteString("- Skill depth: years of experience and proficiency level in the required skill (most important)\n")
+	b.WriteString("- Skills breadth: does their overall tech stack align with the role?\n")
+	b.WriteString("- Title match: does their current or past role reflect the position? (secondary — deep skill experience outweighs a matching title alone)\n\n")
 	b.WriteString("Candidates:\n")
 
 	for i, c := range candidates {

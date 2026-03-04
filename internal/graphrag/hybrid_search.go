@@ -83,9 +83,9 @@ func DefaultHybridConfig() HybridSearchConfig {
 		VectorWeight:       0.6,
 		GraphWeight:        0.4,
 		TopK:               100,
-		FinalTopN:          8, // Retrieval: 100 → fusion → top 8 → single LLM call (fast + consistent)
+		FinalTopN:          8, // Skill-based searches bypass this (see Step 2.55). Used only for skill-less queries as an LLM cost guard.
 		UseCommunityFilter: false,
-		CommunityThreshold: 50,
+		CommunityThreshold: 10,
 	}
 }
 
@@ -203,12 +203,17 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	// Vector search returns semantically similar CVs regardless of tech stack.
 	// If the query specifies skills, remove candidates who have none of them —
 	// they are noise picked up by vector similarity alone.
+	//
+	// skillFilterActive = true when the filter actually eliminated at least one candidate.
+	// This signal is used downstream to bypass the community filter and FinalTopN cut:
+	// if skills are confirmed, domain is already guaranteed — further filtering only causes harm.
+	skillFilterActive := false
 	if searchCriteria != nil && len(searchCriteria.Skills) > 0 {
 		requiredSkills := make(map[string]bool, len(searchCriteria.Skills))
 		for _, s := range searchCriteria.Skills {
 			requiredSkills[strings.ToLower(s)] = true
 		}
-		skillFiltered := fusedCandidates[:0]
+		skillFiltered := make([]FusedCandidate, 0, len(fusedCandidates))
 		for _, c := range fusedCandidates {
 			for _, sk := range c.Skills {
 				if requiredSkills[strings.ToLower(sk.Name)] {
@@ -218,6 +223,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 			}
 		}
 		if len(skillFiltered) > 0 {
+			skillFilterActive = len(skillFiltered) < len(fusedCandidates)
 			log.Printf("[HybridSearch] Skill post-filter: %d → %d candidates (kept skill-relevant only)",
 				len(fusedCandidates), len(skillFiltered))
 			fusedCandidates = skillFiltered
@@ -236,7 +242,9 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	}
 
 	// Step 2.7: Community-based filtering (if enabled) - Microsoft GraphRAG style
-	shouldUseCommunityFilter := config.UseCommunityFilter || len(fusedCandidates) >= config.CommunityThreshold
+	// Skipped when skillFilterActive=true: skill match already guarantees domain relevance.
+	// Used as the primary narrowing mechanism when no skills were extracted (e.g. "Senior Backend Developer").
+	shouldUseCommunityFilter := !skillFilterActive && (config.UseCommunityFilter || len(fusedCandidates) >= config.CommunityThreshold)
 	if shouldUseCommunityFilter && len(fusedCandidates) > 0 {
 		// Infer relevant communities from query
 		queryCommunities := FindCommunitiesByQuery(query)
@@ -273,8 +281,11 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		}
 	}
 
-	// Step 3: Take top N for LLM reranking (if FinalTopN > 0, otherwise send all)
-	if config.FinalTopN > 0 && len(fusedCandidates) > config.FinalTopN {
+	// Step 3: Take top N for LLM reranking.
+	// Skipped when skillFilterActive=true: all skill-matched candidates go to LLM regardless of count.
+	// This ensures graph-only candidates (e.g. Architects with the right skill) aren't cut by RRF vector bias.
+	// For skill-less queries, FinalTopN acts as an LLM cost guard.
+	if !skillFilterActive && config.FinalTopN > 0 && len(fusedCandidates) > config.FinalTopN {
 		fusedCandidates = fusedCandidates[:config.FinalTopN]
 	}
 
@@ -740,10 +751,10 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 		}
 	}
 
-	// Assign keyword-based communities (fallback; used for community filter)
-	// Only compute if not already set from database
+	// Assign keyword-based communities from freshly-loaded skills (used for community filter).
+	// Always recompute from skills — stored `community` prop may be stale or missing Communities list.
 	for i := range candidates {
-		if candidates[i].Community == "" && len(candidates[i].Skills) > 0 {
+		if len(candidates[i].Skills) > 0 {
 			primary, communities, scores := FindCommunities(candidates[i].Skills, 0.3)
 			candidates[i].Community = primary
 			candidates[i].Communities = communities
