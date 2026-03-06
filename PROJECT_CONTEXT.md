@@ -49,6 +49,14 @@ internal/
     db.go                           → DB connection + legacy SearchCandidates()
     models.go                       → DB model structs
 migrations/complete_setup.sql       → tüm tablo tanımları
+docs/
+  docs.go                           → ⚠️ Swagger UI buradan gelir — swagger.yaml/json değil!
+  swagger.yaml / swagger.json       → referans kopyalar (elle güncellenir)
+```
+
+> **Swagger güncelleme kuralı:** Yeni endpoint eklenince `docs/docs.go` içindeki
+> `docTemplate` string'ini güncelle. `swagger.yaml` ve `swagger.json` de senkron tut.
+> `go build ./...` ile kontrol et, sonra push.
 ```
 
 ---
