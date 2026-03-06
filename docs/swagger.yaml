@@ -170,6 +170,106 @@ definitions:
           type: string
         type: array
     type: object
+  api.InterviewRequest:
+    properties:
+      interview_date:
+        description: Required. Format YYYY-MM-DD
+        type: string
+      interview_type:
+        description: 'One of: technical, hr, case_study, other'
+        type: string
+      interviewer_name:
+        type: string
+      notes:
+        type: string
+      outcome:
+        description: 'One of: passed, failed, pending'
+        type: string
+      team:
+        type: string
+    required:
+    - interview_date
+    type: object
+  api.ListCandidatesResponse:
+    properties:
+      candidates:
+        items:
+          $ref: '#/definitions/storage.CandidateListItem'
+        type: array
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total:
+        type: integer
+    type: object
+  storage.CandidateDetail:
+    properties:
+      created_at:
+        type: string
+      current_position:
+        type: string
+      email:
+        type: string
+      graph_node_id:
+        type: integer
+      id:
+        type: integer
+      interviews:
+        items:
+          $ref: '#/definitions/storage.Interview'
+        type: array
+      location:
+        type: string
+      name:
+        type: string
+      phone:
+        type: string
+      seniority:
+        type: string
+    type: object
+  storage.CandidateListItem:
+    properties:
+      created_at:
+        type: string
+      current_position:
+        type: string
+      id:
+        type: integer
+      interview_count:
+        type: integer
+      latest_outcome:
+        type: string
+      name:
+        type: string
+      seniority:
+        type: string
+    type: object
+  storage.Interview:
+    properties:
+      candidate_id:
+        type: integer
+      created_at:
+        type: string
+      id:
+        type: integer
+      interview_date:
+        type: string
+      interview_type:
+        description: technical, hr, case_study, other
+        type: string
+      interviewer_name:
+        type: string
+      notes:
+        type: string
+      outcome:
+        description: passed, failed, pending
+        type: string
+      team:
+        type: string
+      updated_at:
+        type: string
+    type: object
 host: cv-search-production.up.railway.app
 info:
   contact:
@@ -184,6 +284,185 @@ info:
   title: CV Search & GraphRAG API
   version: "2.0"
 paths:
+  /candidates:
+    get:
+      description: Returns a paginated list of candidates with interview count and
+        latest outcome
+      parameters:
+      - default: 50
+        description: Max results to return
+        in: query
+        name: limit
+        type: integer
+      - default: 0
+        description: Offset for pagination
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.ListCandidatesResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: List candidates
+      tags:
+      - candidates
+  /candidates/{id}:
+    get:
+      description: Returns full candidate profile including all interview records
+      parameters:
+      - description: Candidate ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/storage.CandidateDetail'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get candidate detail
+      tags:
+      - candidates
+  /candidates/{id}/interviews:
+    post:
+      consumes:
+      - application/json
+      description: Adds a new interview record for a candidate and queues an embedding
+        re-generation
+      parameters:
+      - description: Candidate ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Interview data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.InterviewRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Create interview
+      tags:
+      - candidates
+  /candidates/{id}/interviews/{iid}:
+    delete:
+      description: Deletes an interview record and queues an embedding re-generation
+      parameters:
+      - description: Candidate ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Interview ID
+        in: path
+        name: iid
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Delete interview
+      tags:
+      - candidates
+    put:
+      consumes:
+      - application/json
+      description: Updates an existing interview record and queues an embedding re-generation
+      parameters:
+      - description: Candidate ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Interview ID
+        in: path
+        name: iid
+        required: true
+        type: integer
+      - description: Updated interview data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.InterviewRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Update interview
+      tags:
+      - candidates
   /cv/batch/{batch_id}:
     get:
       description: Get the processing status of all CVs uploaded in a bulk upload
