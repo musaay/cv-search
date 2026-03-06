@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     education TEXT,
     summary TEXT,
     search_vector tsvector,
+    graph_node_id INT,  -- Linked to graph_nodes(id), populated after graph build
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -68,6 +69,7 @@ CREATE TRIGGER update_candidates_updated_at
 -- Comments
 COMMENT ON TABLE candidates IS 'Main table for candidate profiles';
 COMMENT ON COLUMN candidates.search_vector IS 'tsvector for full-text search (BM25-style)';
+COMMENT ON COLUMN candidates.graph_node_id IS 'FK to graph_nodes.id for the person node; added after graph build';
 
 -- =====================================================
 -- 2. CV FILES & ENTITY EXTRACTION
@@ -271,13 +273,42 @@ BEGIN
 END $$;
 
 -- =====================================================
+-- 8. INTERVIEWS (Per-Candidate Interview Records)
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS interviews (
+    id               SERIAL PRIMARY KEY,
+    candidate_id     INT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    interview_date   DATE NOT NULL,
+    team             TEXT,
+    interviewer_name TEXT,
+    interview_type   TEXT CHECK (interview_type IN ('technical', 'hr', 'case_study', 'other')),
+    notes            TEXT,
+    outcome          TEXT CHECK (outcome IN ('passed', 'failed', 'pending')),
+    created_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_interviews_candidate_id   ON interviews(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_interviews_interview_date ON interviews(interview_date);
+
+DROP TRIGGER IF EXISTS interviews_updated_at ON interviews;
+CREATE TRIGGER interviews_updated_at
+    BEFORE UPDATE ON interviews
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE interviews IS 'Interview records per candidate; multiple rounds and teams supported';
+
+-- =====================================================
 -- SETUP COMPLETE
 -- =====================================================
 -- Tables created:
--- - candidates (with full-text search)
+-- - candidates (with full-text search + graph_node_id)
 -- - cv_files, cv_entities
 -- - graph_nodes, graph_edges (with vector embeddings)
 -- - graph_communities, community_members
 -- - candidate_scores
 -- - cv_upload_jobs (async processing)
+-- - interviews (per-candidate interview records)
 -- Extensions: pgvector

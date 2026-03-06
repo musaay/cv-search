@@ -106,6 +106,22 @@ func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate
 			c.CurrentPosition, c.Seniority, c.TotalExperienceYears))
 		b.WriteString(fmt.Sprintf("  Skills: %s\n", skillNames(c.Skills)))
 		b.WriteString(fmt.Sprintf("  Work history: %s\n", companyNames(c.Companies)))
+		if len(c.Interviews) > 0 {
+			latest := c.Interviews[0] // ordered DESC by date
+			team := latest.Team
+			if team == "" {
+				team = "unspecified team"
+			}
+			ivType := latest.InterviewType
+			if ivType == "" {
+				ivType = "interview"
+			}
+			b.WriteString(fmt.Sprintf("  Previous interview: %s [%s] — Outcome: %s\n",
+				team, ivType, latest.Outcome))
+			if len(c.Interviews) > 1 {
+				b.WriteString(fmt.Sprintf("  Total interview rounds: %d\n", len(c.Interviews)))
+			}
+		}
 	}
 
 	b.WriteString(`

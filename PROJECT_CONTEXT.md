@@ -31,7 +31,7 @@ internal/
     analyzer.go                     → QueryAnalyzer — LLM ile query → SearchCriteria
     llm_scorer.go                   → LLMScorer — LLM reranking prompt + cache
     embeddings.go                   → EmbeddingService — OpenAI embeddings + pgvector search
-    bm25_search.go                  → BM25Searcher (şu an devre dışı, weight=0.0)
+    bm25_search.go                  → BM25Searcher — candidates full-text (BM25Weight=0.2, aktif)
     communities.go                  → DefaultCommunities map + FindCommunities()
     community.go                    → Leiden community detection
     graph.go                        → GraphBuilder — node/edge CRUD
@@ -65,6 +65,11 @@ migrations/complete_setup.sql       → tüm tablo tanımları
 | POST | `/api/cv/bulk-upload` | Toplu CV yükle (max 10) |
 | GET | `/api/cv/batch/{id}` | Batch yükleme durumu |
 | GET | `/api/cv/job/{id}` | Tek job durumu |
+| GET | `/api/candidates` | Aday listesi (`?limit=50&offset=0`) |
+| GET | `/api/candidates/{id}` | Aday detayı + tüm görüşmeler |
+| POST | `/api/candidates/{id}/interviews` | Yeni görüşme ekle (re-embed tetikler) |
+| PUT | `/api/candidates/{id}/interviews/{iid}` | Görüşme güncelle |
+| DELETE | `/api/candidates/{id}/interviews/{iid}` | Görüşme sil |
 | GET | `/api/graph/stats` | Node/edge sayıları |
 | GET | `/api/graph/skills/popular` | En çok görülen skill'ler |
 | POST | `/api/graphrag/search` | Legacy GraphRAG search |
@@ -79,13 +84,14 @@ CORS `CORS_ORIGINS` env var ile kontrol edilir (default `*`).
 
 | Tablo | Amaç |
 |-------|------|
-| `candidates` | Legacy — flat CV storage, `tsvector` full-text index. Hybrid search kullanmıyor. |
+| `candidates` | Aday kaydı. `graph_node_id` ile graph_nodes'a bağlı. `experience`, `skills`, `search_vector` tsvector kolonları BM25 için aktif. |
 | `cv_files` | Yüklenen ham dosyalar, extract edilmiş text, SHA-256 duplicate kontrolü |
 | `cv_entities` | Dosya başına LLM tarafından çıkarılan entity'ler |
 | `graph_nodes` | Property graph node'ları: `person`, `skill`, `company`, `education`. `vector` kolonu (1536d) var. |
 | `graph_edges` | Typed edge'ler: `HAS_SKILL`, `WORKS_AT`, `WORKED_AT`, `GRADUATED_FROM` |
 | `graph_communities` | Leiden algoritması ile tespit edilen topluluklar, `level`, `summary`, `vector` var |
 | `community_members` | `graph_nodes ↔ graph_communities` many-to-many, `membership_strength` |
+| `interviews` | Aday görüşmeleri — `interview_date`, `team`, `interviewer_name`, `interview_type`, `outcome`, `notes`. Her adayın N görüşmesi olabilir. |
 | `candidate_scores` | Geçmiş arama skorları (historik, aktif kullanılmıyor) |
 | `cv_upload_jobs` | Async job kuyruğu: `pending → processing → completed/failed`, max 3 retry |
 
@@ -105,7 +111,7 @@ POST /api/search/hybrid  {"query": "Python Developer"}
           │
           ▼
 2. PARALEL RETRIEVAL (3 goroutine)
-   ├── BM25  → candidates tablosunda full-text (weight=0.0, devre dışı)
+   ├── BM25  → candidates tablosunda full-text, OR tsquery (BM25Weight=0.2)
    ├── Vector→ graph_nodes üzerinde pgvector cosine search (TopK=100)
    └── Graph → QueryAnalyzer ile query → SearchCriteria (LLM call)
                → buildQuery() ile SQL traversal
@@ -114,7 +120,7 @@ POST /api/search/hybrid  {"query": "Python Developer"}
           ▼
 3. RRF FUSION
    Reciprocal Rank Fusion (k=60) + normalize
-   FusionScore = 0.0*BM25 + 0.6*Vector + 0.4*Graph
+   FusionScore = 0.2*BM25 + 0.5*Vector + 0.3*Graph
           │
           ▼
 4. ENRICH
@@ -160,9 +166,9 @@ POST /api/search/hybrid  {"query": "Python Developer"}
 |-------|-------|---------------|
 | `FinalTopN` | `hybrid_search.go DefaultHybridConfig()` | **8** |
 | `TopK` | `hybrid_search.go DefaultHybridConfig()` | **100** |
-| `BM25Weight` | `hybrid_search.go` | **0.0** (devre dışı) |
-| `VectorWeight` | `hybrid_search.go` | **0.6** |
-| `GraphWeight` | `hybrid_search.go` | **0.4** |
+| `BM25Weight` | `hybrid_search.go` | **0.2** |
+| `VectorWeight` | `hybrid_search.go` | **0.5** |
+| `GraphWeight` | `hybrid_search.go` | **0.3** |
 | `CommunityThreshold` | `hybrid_search.go` | **50** |
 | `llmBatchSize` | `llm_scorer.go` | **8** (tek call, gerçek batch yok — isim yanıltıcı) |
 | Semantic cache TTL | `hybrid_search.go` | **30 dakika**, threshold **0.95** |
@@ -243,5 +249,5 @@ LLM zaten iyi bir recruiter gibi düşünebilir — ona sadece temiz bir aday li
 | 2 | `llmBatchSize` ismi yanıltıcı — batch logic yok, tek call | Sadece isim karışıklığı |
 | 3 | `embeddings.go`: `ORDER BY similarity ASC` — sıralama tersten olabilir | Fusion'da RRF düzeltiyor, tek başına kullanılırsa bozulur |
 | 4 | `DEALLOCATE ALL` her aramada çalışır | Yüksek concurrency'de başka isteğin prepared statement'ını öldürebilir |
-| 5 | BM25 tamamen devre dışı (`candidates` tablosu var ama kullanılmıyor) | Sıfır etki şu an |
+| 5 | BM25 OR tsquery — çok kısa sorgu (tek kelime < 3 harf) fallback'e düşer | Pratik etkisi yok |
 | 6 | Community: keyword-based `DefaultCommunities` + Leiden graph communities ayrı sistemler | İleride birleştirilmeli |

@@ -155,6 +155,29 @@ func (a *API) cvProcessingWorker() {
 			} else {
 				log.Printf("[CVProcessingWorker] Job %d: Graph built successfully", job.JobID)
 
+				// Link candidate record to the newly built person graph node
+				candidateName := extraction.Candidate.Name
+				if candidateName != "" {
+					personNodeID, lookupErr := a.db.GetPersonGraphNodeIDByName(ctx, candidateName)
+					if lookupErr != nil {
+						log.Printf("[CVProcessingWorker] Job %d: Failed to look up person node: %v", job.JobID, lookupErr)
+					} else if personNodeID > 0 {
+						candidateID, upsertErr := a.db.UpsertCandidateForGraphNode(ctx, personNodeID, candidateName)
+						if upsertErr != nil {
+							log.Printf("[CVProcessingWorker] Job %d: Failed to upsert candidate: %v", job.JobID, upsertErr)
+						} else {
+							if linkErr := a.db.UpdateCVFileCandidateID(ctx, job.CVFileID, candidateID); linkErr != nil {
+								log.Printf("[CVProcessingWorker] Job %d: Failed to link cv_file to candidate: %v", job.JobID, linkErr)
+							}
+							// Sync experience + skills into candidates for BM25 search
+							if syncErr := a.db.SyncCandidateTextFields(ctx, candidateID, personNodeID); syncErr != nil {
+								log.Printf("[CVProcessingWorker] Job %d: Failed to sync candidate text fields: %v", job.JobID, syncErr)
+							}
+							log.Printf("[CVProcessingWorker] Job %d: Candidate %d linked to node %d", job.JobID, candidateID, personNodeID)
+						}
+					}
+				}
+
 				// Queue background embedding job for newly created nodes
 				newNodeIDs := a.collectNewNodeIDs(ctx, job.CVFileID)
 				if len(newNodeIDs) > 0 {

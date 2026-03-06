@@ -35,9 +35,32 @@ func NewHybridSearchEngine(db *sql.DB, llm LLMClient, openaiKey string) *HybridS
 	}
 }
 
+// ReEmbedPersonNode regenerates the vector embedding for a person node, enriching it with
+// current interview notes. Call this after any interview write to keep search signals fresh.
+// notes should be all interview notes for the candidate (fetched via DB).
+func (h *HybridSearchEngine) ReEmbedPersonNode(ctx context.Context, graphNodeID int, notes []string) error {
+	if h.embeddingService == nil {
+		return fmt.Errorf("embedding service not available")
+	}
+	return h.embeddingService.ReEmbedPersonNodeByID(ctx, graphNodeID, notes)
+}
+
+// InterviewContext holds lightweight interview data attached to a search candidate.
+// Used for outcome-based score adjustments and LLM prompt enrichment.
+type InterviewContext struct {
+	ID              int
+	InterviewDate   time.Time
+	Team            string
+	InterviewerName string
+	InterviewType   string
+	Outcome         string // passed, failed, pending
+	Notes           string // available for re-embedding; excluded from API response
+}
+
 // FusedCandidate represents a candidate with scores from multiple sources
 type FusedCandidate struct {
 	CandidateID              int
+	GraphNodeIntID           int    // graph_nodes.id (integer PK), needed for interview lookup
 	PersonID                 string // Graph uses string IDs
 	Name                     string
 	CurrentPosition          string
@@ -45,6 +68,7 @@ type FusedCandidate struct {
 	TotalExperienceYears     int
 	Skills                   []SkillNode
 	Companies                []CompanyNode
+	Interviews               []InterviewContext // loaded during enrichment
 	Community                string             // Primary community
 	Communities              []string           // All matching communities (Microsoft GraphRAG style)
 	CommunityScores          map[string]float64 // Normalized scores for each community
@@ -79,9 +103,9 @@ type HybridSearchConfig struct {
 
 func DefaultHybridConfig() HybridSearchConfig {
 	return HybridSearchConfig{
-		BM25Weight:         0.0, // BM25 disabled (candidates table not used)
-		VectorWeight:       0.6,
-		GraphWeight:        0.4,
+		BM25Weight:         0.2, // Full-text search on candidates.search_vector (name + skills + experience)
+		VectorWeight:       0.5,
+		GraphWeight:        0.3,
 		TopK:               100,
 		FinalTopN:          8, // Skill-based searches bypass this (see Step 2.55). Used only for skill-less queries as an LLM cost guard.
 		UseCommunityFilter: false,
@@ -281,6 +305,22 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		}
 	}
 
+	// Step 2.8: Interview outcome modifier.
+	// Adjusts FusionScore based on the most recent interview result.
+	// Applied before top-N cut so outcome-boosted candidates rank higher going into LLM.
+	for i := range fusedCandidates {
+		if len(fusedCandidates[i].Interviews) == 0 {
+			continue
+		}
+		// Interviews are ordered DESC by date; first entry is the most recent
+		switch fusedCandidates[i].Interviews[0].Outcome {
+		case "passed":
+			fusedCandidates[i].FusionScore = min(1.0, fusedCandidates[i].FusionScore+0.05)
+		case "failed":
+			fusedCandidates[i].FusionScore = max(0.0, fusedCandidates[i].FusionScore-0.10)
+		}
+	}
+
 	// Step 3: Take top N for LLM reranking.
 	// Skipped when skillFilterActive=true: all skill-matched candidates go to LLM regardless of count.
 	// This ensures graph-only candidates (e.g. Architects with the right skill) aren't cut by RRF vector bias.
@@ -401,20 +441,24 @@ func (h *HybridSearchEngine) fuseResults(
 	// Create a map of candidate scores (keyed by PersonID string)
 	scoreMap := make(map[string]*FusedCandidate)
 
-	// Normalize and add BM25 scores
+	// Normalize and add BM25 scores.
+	// Use graph node_id as key so results merge with vector/graph sources.
+	// Fall back to cand_X if node_id is empty (shouldn't happen in practice).
 	maxBM25 := maxBM25Score(bm25)
 	for i, r := range bm25 {
-		candidateKey := fmt.Sprintf("cand_%d", r.CandidateID)
+		candidateKey := r.NodeID
+		if candidateKey == "" {
+			candidateKey = fmt.Sprintf("cand_%d", r.CandidateID)
+		}
 		if _, exists := scoreMap[candidateKey]; !exists {
 			scoreMap[candidateKey] = &FusedCandidate{
+				PersonID:    candidateKey,
 				CandidateID: r.CandidateID,
 				Name:        r.Name,
 			}
 		}
-		// Reciprocal Rank Fusion: 1 / (k + rank)
-		// Also use normalized score
 		normalizedScore := r.Rank / maxBM25
-		rrfScore := 1.0 / float64(60+i+1) // k=60 is common in RRF
+		rrfScore := 1.0 / float64(60+i+1) // k=60 is standard RRF constant
 		scoreMap[candidateKey].BM25Score = (normalizedScore + rrfScore) / 2.0
 	}
 
@@ -546,9 +590,10 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 	inClause := "(" + strings.Join(placeholders, ",") + ")"
 
 	// BATCH 1: Load all person details in one query
+	// Also fetch integer id so we can correlate with interviews.candidate_id via candidates.graph_node_id
 	personQuery := fmt.Sprintf(`
-		SELECT node_id, properties 
-		FROM graph_nodes 
+		SELECT id, node_id, properties
+		FROM graph_nodes
 		WHERE node_id IN %s AND node_type = 'person'
 	`, inClause)
 
@@ -559,10 +604,14 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 	}
 	defer personRows.Close()
 
+	// Track integer IDs for interview batch lookup
+	nodeIntIDIndex := make(map[int]int) // graphNodeIntID → candidate slice index
+
 	for personRows.Next() {
+		var nodeIntID int
 		var personID string
 		var propsJSON []byte
-		if err := personRows.Scan(&personID, &propsJSON); err != nil {
+		if err := personRows.Scan(&nodeIntID, &personID, &propsJSON); err != nil {
 			continue
 		}
 
@@ -570,6 +619,8 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 		if !ok {
 			continue
 		}
+		candidates[idx].GraphNodeIntID = nodeIntID
+		nodeIntIDIndex[nodeIntID] = idx
 
 		var props map[string]interface{}
 		if err := json.Unmarshal(propsJSON, &props); err != nil {
@@ -759,6 +810,48 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 			candidates[i].Community = primary
 			candidates[i].Communities = communities
 			candidates[i].CommunityScores = scores
+		}
+	}
+
+	// BATCH 5: Load interviews for all candidates via candidates.graph_node_id
+	if len(nodeIntIDIndex) > 0 {
+		nodeIntIDs := make([]interface{}, 0, len(nodeIntIDIndex))
+		for nodeIntID := range nodeIntIDIndex {
+			nodeIntIDs = append(nodeIntIDs, nodeIntID)
+		}
+		interviewPlaceholders := make([]string, len(nodeIntIDs))
+		for i := range nodeIntIDs {
+			interviewPlaceholders[i] = fmt.Sprintf("$%d", i+1)
+		}
+		interviewQuery := fmt.Sprintf(`
+			SELECT c.graph_node_id, i.id, i.interview_date,
+			       COALESCE(i.team,''), COALESCE(i.interviewer_name,''),
+			       COALESCE(i.interview_type,''), COALESCE(i.outcome,''), COALESCE(i.notes,'')
+			FROM interviews i
+			JOIN candidates c ON c.id = i.candidate_id
+			WHERE c.graph_node_id IN (%s)
+			ORDER BY i.interview_date DESC
+		`, strings.Join(interviewPlaceholders, ","))
+
+		ivRows, ivErr := h.db.QueryContext(ctx, interviewQuery, nodeIntIDs...)
+		if ivErr != nil {
+			log.Printf("[HybridSearch] Failed to batch load interviews (non-fatal): %v", ivErr)
+		} else {
+			defer ivRows.Close()
+			for ivRows.Next() {
+				var nodeIntID, ivID int
+				var iv InterviewContext
+				if err := ivRows.Scan(
+					&nodeIntID, &ivID, &iv.InterviewDate,
+					&iv.Team, &iv.InterviewerName, &iv.InterviewType, &iv.Outcome, &iv.Notes,
+				); err != nil {
+					continue
+				}
+				iv.ID = ivID
+				if idx, ok := nodeIntIDIndex[nodeIntID]; ok {
+					candidates[idx].Interviews = append(candidates[idx].Interviews, iv)
+				}
+			}
 		}
 	}
 }

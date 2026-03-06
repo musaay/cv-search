@@ -92,5 +92,12 @@ func NewRouter(a *API) http.Handler {
 	// Hybrid Search endpoint (BM25 + Vector + Graph + LLM)
 	mux.HandleFunc("/api/search/hybrid", a.HybridSearchHandler)
 
+	// Candidate management + interview tracking
+	mux.HandleFunc("GET /api/candidates", a.ListCandidatesHandler)
+	mux.HandleFunc("GET /api/candidates/{id}", a.GetCandidateHandler)
+	mux.HandleFunc("POST /api/candidates/{id}/interviews", a.CreateInterviewHandler)
+	mux.HandleFunc("PUT /api/candidates/{id}/interviews/{iid}", a.UpdateInterviewHandler)
+	mux.HandleFunc("DELETE /api/candidates/{id}/interviews/{iid}", a.DeleteInterviewHandler)
+
 	return corsMiddleware(mux)
 }

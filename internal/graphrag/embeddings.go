@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -270,4 +271,61 @@ func getString(m map[string]interface{}, key string) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return ""
+}
+
+// ReEmbedPersonNodeByID regenerates the embedding for a person node, enriching the text
+// with any interview notes so the vector reflects the candidate's full interview history.
+// Should be called after every interview create/update/delete.
+func (s *EmbeddingService) ReEmbedPersonNodeByID(ctx context.Context, graphNodeID int, interviewNotes []string) error {
+	var nodeType string
+	var properties []byte
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT node_type, properties
+		FROM graph_nodes
+		WHERE id = $1
+	`, graphNodeID).Scan(&nodeType, &properties)
+	if err != nil {
+		return fmt.Errorf("re-embed: node %d not found: %w", graphNodeID, err)
+	}
+	if nodeType != "person" {
+		return fmt.Errorf("re-embed: node %d is not a person node (type: %s)", graphNodeID, nodeType)
+	}
+
+	var props map[string]interface{}
+	if err := json.Unmarshal(properties, &props); err != nil {
+		return fmt.Errorf("re-embed: failed to parse properties: %w", err)
+	}
+
+	// Build base text from node properties
+	baseText := s.nodeToText(nodeType, props)
+
+	// Enrich with interview notes if any
+	var embeddingText string
+	if len(interviewNotes) > 0 {
+		embeddingText = baseText + " Interview notes: " + strings.Join(interviewNotes, " | ")
+	} else {
+		embeddingText = baseText
+	}
+
+	embedding, err := s.GenerateEmbedding(ctx, embeddingText)
+	if err != nil {
+		return fmt.Errorf("re-embed: embedding generation failed: %w", err)
+	}
+
+	embeddingJSON, _ := json.Marshal(embedding)
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE graph_nodes
+		SET embedding = $1,
+		    embedding_model = 'text-embedding-3-small',
+		    embedding_created_at = NOW()
+		WHERE id = $2
+	`, string(embeddingJSON), graphNodeID)
+
+	if err != nil {
+		return fmt.Errorf("re-embed: DB update failed: %w", err)
+	}
+
+	log.Printf("[Embeddings] Re-embedded person node %d (%d interview notes merged)", graphNodeID, len(interviewNotes))
+	return nil
 }

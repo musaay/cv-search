@@ -20,6 +20,7 @@ func NewBM25Searcher(db *sql.DB) *BM25Searcher {
 // BM25Result represents a candidate with BM25 relevance score
 type BM25Result struct {
 	CandidateID int
+	NodeID      string  // graph_nodes.node_id — the shared key for merging with vector/graph results
 	Name        string
 	Rank        float64 // PostgreSQL ts_rank score
 	Headline    string  // First 100 chars of experience
@@ -37,14 +38,18 @@ func (b *BM25Searcher) Search(ctx context.Context, query string, limit int) ([]B
 	// "Go developer" -> "Go & developer"
 	tsQuery := prepareTSQuery(query)
 
+	// Join graph_nodes to get node_id — the same key used by vector and graph searchers.
+	// Without this, BM25 results would never merge with the other two sources.
 	sqlQuery := `
-		SELECT 
-			id,
-			name,
-			ts_rank(search_vector, to_tsquery('english', $1)) as rank,
-			LEFT(experience, 100) as headline
-		FROM candidates
-		WHERE search_vector @@ to_tsquery('english', $1)
+		SELECT
+			c.id,
+			COALESCE(gn.node_id, ''),
+			c.name,
+			ts_rank(c.search_vector, to_tsquery('english', $1)) as rank,
+			LEFT(c.experience, 100) as headline
+		FROM candidates c
+		LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
+		WHERE c.search_vector @@ to_tsquery('english', $1)
 		ORDER BY rank DESC
 		LIMIT $2
 	`
@@ -58,7 +63,7 @@ func (b *BM25Searcher) Search(ctx context.Context, query string, limit int) ([]B
 	var results []BM25Result
 	for rows.Next() {
 		var r BM25Result
-		if err := rows.Scan(&r.CandidateID, &r.Name, &r.Rank, &r.Headline); err != nil {
+		if err := rows.Scan(&r.CandidateID, &r.NodeID, &r.Name, &r.Rank, &r.Headline); err != nil {
 			return nil, fmt.Errorf("scan failed: %w", err)
 		}
 		results = append(results, r)
@@ -67,16 +72,13 @@ func (b *BM25Searcher) Search(ctx context.Context, query string, limit int) ([]B
 	return results, rows.Err()
 }
 
-// prepareTSQuery converts natural language query to PostgreSQL tsquery
-// Example: "senior golang developer" -> "senior & golang & developer"
+// prepareTSQuery converts natural language query to PostgreSQL tsquery.
+// Uses OR logic so any term match counts; ts_rank handles relevance ordering.
+// Example: "senior golang developer" -> "senior | golang | develop"
 func prepareTSQuery(query string) string {
-	// Remove special characters
 	query = strings.ToLower(query)
-
-	// Split by spaces and join with &
 	words := strings.Fields(query)
 
-	// Filter out common stop words (already handled by to_tsvector, but extra safety)
 	filtered := make([]string, 0, len(words))
 	for _, word := range words {
 		if len(word) > 2 { // Skip very short words
@@ -85,10 +87,12 @@ func prepareTSQuery(query string) string {
 	}
 
 	if len(filtered) == 0 {
-		return "default" // Fallback
+		return "default"
 	}
 
-	return strings.Join(filtered, " & ")
+	// OR logic for maximum recall — ts_rank will sort by how many terms match.
+	// AND would require ALL terms in one row, which is too strict for skill lists.
+	return strings.Join(filtered, " | ")
 }
 
 // SearchWithWeights allows custom weight for different fields
