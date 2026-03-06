@@ -96,9 +96,14 @@ func NewRouter(a *API) http.Handler {
 	// Candidate management + interview tracking
 	mux.HandleFunc("GET /api/candidates", a.ListCandidatesHandler)
 	mux.HandleFunc("GET /api/candidates/{id}", a.GetCandidateHandler)
+	mux.HandleFunc("GET /api/candidates/{id}/similar", a.SimilarCandidatesHandler)
 	mux.HandleFunc("POST /api/candidates/{id}/interviews", a.CreateInterviewHandler)
 	mux.HandleFunc("PUT /api/candidates/{id}/interviews/{iid}", a.UpdateInterviewHandler)
 	mux.HandleFunc("DELETE /api/candidates/{id}/interviews/{iid}", a.DeleteInterviewHandler)
+
+	// Autocomplete + popular queries
+	mux.HandleFunc("GET /api/search/suggest", a.SuggestHandler)
+	mux.HandleFunc("GET /api/search/popular-queries", a.PopularQueriesHandler)
 
 	return corsMiddleware(mux)
 }

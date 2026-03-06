@@ -66,6 +66,22 @@ type CandidateListItem struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+// SuggestionResult is a single autocomplete suggestion for the search box.
+type SuggestionResult struct {
+	Text string `json:"text"`
+	Type string `json:"type"` // skill | company | position
+}
+
+// SimilarCandidate is a lightweight result row returned by the similar-candidates endpoint.
+type SimilarCandidate struct {
+	CandidateID     int      `json:"candidate_id"`
+	Name            string   `json:"name"`
+	CurrentPosition string   `json:"current_position,omitempty"`
+	Seniority       string   `json:"seniority,omitempty"`
+	TopSkills       []string `json:"top_skills,omitempty"`
+	Similarity      float64  `json:"similarity"`
+}
+
 // Criteria used to search for candidates.
 type Criteria struct {
 	Name     string   `json:"name"`

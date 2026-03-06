@@ -47,6 +47,13 @@ func (h *HybridSearchEngine) ReEmbedPersonNode(ctx context.Context, graphNodeID 
 	return h.embeddingService.ReEmbedPersonNodeByID(ctx, graphNodeID, notes)
 }
 
+// GetEmbeddingService exposes the underlying EmbeddingService so callers
+// (e.g. the similar-candidates endpoint) can run embedding-based lookups
+// without going through the full search pipeline.
+func (h *HybridSearchEngine) GetEmbeddingService() *EmbeddingService {
+	return h.embeddingService
+}
+
 // InterviewContext holds lightweight interview data attached to a search candidate.
 // Used for outcome-based score adjustments and LLM prompt enrichment.
 type InterviewContext struct {

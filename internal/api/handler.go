@@ -85,6 +85,12 @@ type API struct {
 	// multiple CVs are uploaded in quick succession.
 	commDetectMu   sync.Mutex
 	lastCommDetect time.Time
+
+	// Popular queries in-memory cache (5 min TTL) — avoids hitting DB on every
+	// keystroke if the frontend pre-fetches on load.
+	popularQueriesMu    sync.Mutex
+	popularQueriesCache []string
+	popularQueriesExp   time.Time
 }
 
 func NewAPI(db *storage.DB, cfg *config.Config) *API {

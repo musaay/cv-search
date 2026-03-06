@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -707,4 +708,260 @@ func (db *DB) GetJobByID(ctx context.Context, jobID int64) (*CVUploadJob, error)
 	job.Progress = make(map[string]interface{})
 
 	return &job, nil
+}
+
+// ─── Search suggestions & popular queries ────────────────────────────────────
+
+// SuggestFromGraph returns autocomplete suggestions matching the given prefix.
+// Searches skill and company node names, and person node current positions.
+// Deduplicates and caps the result at limit.
+func (db *DB) SuggestFromGraph(ctx context.Context, prefix string, limit int) ([]SuggestionResult, error) {
+	if prefix == "" || limit <= 0 {
+		return []SuggestionResult{}, nil
+	}
+	pattern := prefix + "%"
+
+	rows, err := db.connection.QueryContext(ctx, `
+		(
+			SELECT properties->>'name' AS text, 'skill' AS type
+			FROM graph_nodes
+			WHERE node_type = 'skill'
+			  AND properties->>'name' ILIKE $1
+			  AND properties->>'name' IS NOT NULL
+			LIMIT $2
+		)
+		UNION
+		(
+			SELECT properties->>'name' AS text, 'company' AS type
+			FROM graph_nodes
+			WHERE node_type = 'company'
+			  AND properties->>'name' ILIKE $1
+			  AND properties->>'name' IS NOT NULL
+			LIMIT $2
+		)
+		UNION
+		(
+			SELECT DISTINCT properties->>'current_position' AS text, 'position' AS type
+			FROM graph_nodes
+			WHERE node_type = 'person'
+			  AND properties->>'current_position' ILIKE $1
+			  AND properties->>'current_position' IS NOT NULL
+			LIMIT $2
+		)
+		LIMIT $2
+	`, pattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("suggest query: %w", err)
+	}
+	defer rows.Close()
+
+	seen := make(map[string]struct{})
+	var results []SuggestionResult
+	for rows.Next() {
+		var s SuggestionResult
+		if err := rows.Scan(&s.Text, &s.Type); err != nil {
+			continue
+		}
+		key := strings.ToLower(s.Text)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		results = append(results, s)
+	}
+	return results, rows.Err()
+}
+
+// GetTopSkillsForQueries returns the most common skill names (by HAS_SKILL edge count)
+// and the most common seniority levels, for use in generating popular query suggestions.
+func (db *DB) GetTopSkillsForQueries(ctx context.Context, skillLimit, seniorityLimit int) (skills []string, seniorities []string, err error) {
+	// Top skills by popularity (most candidates have them)
+	skillRows, err := db.connection.QueryContext(ctx, `
+		SELECT s.properties->>'name' AS skill_name
+		FROM graph_edges ge
+		JOIN graph_nodes s ON ge.target_node_id = s.id
+		WHERE ge.edge_type = 'HAS_SKILL'
+		  AND s.node_type = 'skill'
+		  AND s.properties->>'name' IS NOT NULL
+		GROUP BY skill_name
+		ORDER BY COUNT(*) DESC
+		LIMIT $1
+	`, skillLimit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("top skills query: %w", err)
+	}
+	defer skillRows.Close()
+	for skillRows.Next() {
+		var name string
+		if err := skillRows.Scan(&name); err == nil && name != "" {
+			skills = append(skills, name)
+		}
+	}
+
+	// Top seniority levels
+	senRows, err := db.connection.QueryContext(ctx, `
+		SELECT properties->>'seniority', COUNT(*) AS cnt
+		FROM graph_nodes
+		WHERE node_type = 'person'
+		  AND properties->>'seniority' IS NOT NULL
+		  AND properties->>'seniority' != ''
+		GROUP BY properties->>'seniority'
+		ORDER BY cnt DESC
+		LIMIT $1
+	`, seniorityLimit)
+	if err != nil {
+		return skills, nil, fmt.Errorf("seniority query: %w", err)
+	}
+	defer senRows.Close()
+	for senRows.Next() {
+		var s string
+		var cnt int
+		if err := senRows.Scan(&s, &cnt); err == nil && s != "" {
+			seniorities = append(seniorities, s)
+		}
+	}
+	return skills, seniorities, nil
+}
+
+// GetPersonEmbedding reads the stored vector embedding for a person graph node,
+// returning it as []float32 for direct use in similarity search.
+// Returns nil if the node has no embedding.
+func (db *DB) GetPersonEmbedding(ctx context.Context, graphNodeID int) ([]float32, error) {
+	var embText sql.NullString
+	err := db.connection.QueryRowContext(ctx, `
+		SELECT embedding::text
+		FROM graph_nodes
+		WHERE id = $1 AND node_type = 'person' AND embedding IS NOT NULL
+	`, graphNodeID).Scan(&embText)
+	if err == sql.ErrNoRows || !embText.Valid {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get person embedding: %w", err)
+	}
+
+	// pgvector text format: "[0.1,0.2,...]"
+	text := strings.TrimPrefix(strings.TrimSuffix(strings.TrimSpace(embText.String), "]"), "[")
+	parts := strings.Split(text, ",")
+	result := make([]float32, 0, len(parts))
+	for _, p := range parts {
+		v, err := strconv.ParseFloat(strings.TrimSpace(p), 32)
+		if err != nil {
+			continue
+		}
+		result = append(result, float32(v))
+	}
+	return result, nil
+}
+
+// GetCandidatesByPersonNodeIDs returns lightweight candidate info for the given person node_ids
+// (e.g. "person_2"). Used to enrich similar-candidate results with DB data.
+// excludeNodeID is filtered out from results (the source candidate).
+func (db *DB) GetCandidatesByPersonNodeIDs(ctx context.Context, personNodeIDs []string, excludeNodeID string, similarities map[string]float64) ([]SimilarCandidate, error) {
+	if len(personNodeIDs) == 0 {
+		return []SimilarCandidate{}, nil
+	}
+
+	placeholders := make([]string, len(personNodeIDs))
+	args := make([]interface{}, len(personNodeIDs))
+	for i, id := range personNodeIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	inClause := strings.Join(placeholders, ",")
+
+	query := fmt.Sprintf(`
+		SELECT c.id, c.name,
+		       COALESCE(gn.properties->>'current_position', '') AS current_position,
+		       COALESCE(gn.properties->>'seniority', '')        AS seniority,
+		       gn.node_id
+		FROM candidates c
+		JOIN graph_nodes gn ON gn.id = c.graph_node_id
+		WHERE gn.node_id IN (%s)
+		  AND gn.node_id <> $%d
+	`, inClause, len(personNodeIDs)+1)
+	args = append(args, excludeNodeID)
+
+	rows, err := db.connection.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get candidates by node ids: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SimilarCandidate
+	nodeIDs := make([]int, 0)
+	candidateNodeMap := make(map[int]int) // candidateID -> index in results
+
+	for rows.Next() {
+		var sc SimilarCandidate
+		var nodeID string
+		if err := rows.Scan(&sc.CandidateID, &sc.Name, &sc.CurrentPosition, &sc.Seniority, &nodeID); err != nil {
+			continue
+		}
+		sc.Similarity = similarities[nodeID]
+		_ = nodeIDs
+		candidateNodeMap[sc.CandidateID] = len(results)
+		results = append(results, sc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Enrich with top 5 skills per candidate
+	if len(results) > 0 {
+		candidateIDs := make([]string, len(results))
+		for i, r := range results {
+			candidateIDs[i] = fmt.Sprintf("$%d", i+1)
+			_ = r
+		}
+		idArgs := make([]interface{}, len(results))
+		for i, r := range results {
+			idArgs[i] = r.CandidateID
+		}
+
+		skillRows, err := db.connection.QueryContext(ctx, fmt.Sprintf(`
+			SELECT c.id, s.properties->>'name'
+			FROM candidates c
+			JOIN graph_nodes gn ON gn.id = c.graph_node_id
+			JOIN graph_edges ge ON ge.source_node_id = gn.id
+			JOIN graph_nodes s  ON s.id = ge.target_node_id
+			WHERE c.id IN (%s)
+			  AND ge.edge_type = 'HAS_SKILL'
+			  AND s.node_type = 'skill'
+			ORDER BY c.id, ge.id
+		`, strings.Join(candidateIDs, ",")), idArgs...)
+		if err == nil {
+			defer skillRows.Close()
+			skillMap := make(map[int][]string)
+			for skillRows.Next() {
+				var cid int
+				var skill string
+				if err := skillRows.Scan(&cid, &skill); err == nil && skill != "" {
+					if len(skillMap[cid]) < 5 {
+						skillMap[cid] = append(skillMap[cid], skill)
+					}
+				}
+			}
+			for i := range results {
+				results[i].TopSkills = skillMap[results[i].CandidateID]
+			}
+		}
+	}
+
+	return results, nil
+}
+// GetPersonNodeIDString returns the string node_id (e.g. "person_2") for an integer
+// graph_node_id that is stored on the candidates table. Returns "" if not found.
+func (db *DB) GetPersonNodeIDString(ctx context.Context, graphNodeID int) (string, error) {
+	var nodeID string
+	err := db.connection.QueryRowContext(ctx, `
+		SELECT node_id FROM graph_nodes WHERE id = $1 AND node_type = 'person' LIMIT 1
+	`, graphNodeID).Scan(&nodeID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get person node_id string: %w", err)
+	}
+	return nodeID, nil
 }

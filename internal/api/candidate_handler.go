@@ -281,3 +281,139 @@ func (a *API) DeleteInterviewHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// ─── Similar Candidates ───────────────────────────────────────────────────────
+
+type similarCandidatesResponse struct {
+	SourceCandidateID int                      `json:"source_candidate_id"`
+	TopK              int                      `json:"top_k"`
+	Similar           []storage.SimilarCandidate `json:"similar"`
+}
+
+// SimilarCandidatesHandler returns candidates whose embedding vector is closest
+// to the requested candidate's vector.
+//   GET /api/candidates/{id}/similar?top_k=5
+//
+// Requires the candidate to have been embedded (via a CV upload). Returns
+// at most top_k results (default 5, max 20). Candidates without an embedding
+// will receive an empty list.
+func (a *API) SimilarCandidatesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	candidateID, err := parseCandidateID(r)
+	if err != nil {
+		http.Error(w, "invalid candidate id", http.StatusBadRequest)
+		return
+	}
+
+	topK := 5
+	if v := r.URL.Query().Get("top_k"); v != "" {
+		n, _ := strconv.Atoi(v)
+		if n >= 1 && n <= 20 {
+			topK = n
+		}
+	}
+
+	ctx := r.Context()
+
+	// Step 1: get integer graph_node_id
+	graphNodeID, err := a.db.GetGraphNodeIDForCandidate(ctx, candidateID)
+	if err != nil {
+		log.Printf("[Similar] GetGraphNodeIDForCandidate(%d): %v", candidateID, err)
+		http.Error(w, "candidate lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if graphNodeID == 0 {
+		// Candidate exists but graph hasn't been built yet
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(similarCandidatesResponse{
+			SourceCandidateID: candidateID,
+			TopK:              topK,
+			Similar:           []storage.SimilarCandidate{},
+		})
+		return
+	}
+
+	// Step 2: get string node_id ("person_2") — needed to exclude source from results
+	sourceNodeID, err := a.db.GetPersonNodeIDString(ctx, graphNodeID)
+	if err != nil {
+		log.Printf("[Similar] GetPersonNodeIDString(graphNodeID=%d): %v", graphNodeID, err)
+		http.Error(w, "graph node lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if sourceNodeID == "" {
+		// Person node doesn't exist yet — graph not built
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(similarCandidatesResponse{
+			SourceCandidateID: candidateID,
+			TopK:              topK,
+			Similar:           []storage.SimilarCandidate{},
+		})
+		return
+	}
+
+	// Step 3: load embedding vector
+	embedding, err := a.db.GetPersonEmbedding(ctx, graphNodeID)
+	if err != nil {
+		log.Printf("[Similar] GetPersonEmbedding(graphNodeID=%d): %v", graphNodeID, err)
+		http.Error(w, "embedding lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if len(embedding) == 0 {
+		// No embedding yet — return empty result set, not an error
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(similarCandidatesResponse{
+			SourceCandidateID: candidateID,
+			TopK:              topK,
+			Similar:           []storage.SimilarCandidate{},
+		})
+		return
+	}
+
+	// Step 4: nearest-neighbour search via pgvector
+	embSvc := a.hybridSearchEngine.GetEmbeddingService()
+	if embSvc == nil {
+		log.Printf("[Similar] embedding service unavailable")
+		http.Error(w, "embedding service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Fetch topK+1 so we can exclude the source candidate itself from results
+	nodeIDs, sims, err := embSvc.SimilaritySearchByEmbedding(ctx, embedding, topK+1)
+	if err != nil {
+		log.Printf("[Similar] SimilaritySearchByEmbedding: %v", err)
+		http.Error(w, "similarity search failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Step 5: build similarity map and fetch full candidate info
+	simMap := make(map[string]float64, len(nodeIDs))
+	for i, nid := range nodeIDs {
+		simMap[nid] = sims[i]
+	}
+
+	similar, err := a.db.GetCandidatesByPersonNodeIDs(ctx, nodeIDs, sourceNodeID, simMap)
+	if err != nil {
+		log.Printf("[Similar] GetCandidatesByPersonNodeIDs: %v", err)
+		http.Error(w, "enrichment query failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Cap to topK (excludeNodeID may have already trimmed one result)
+	if len(similar) > topK {
+		similar = similar[:topK]
+	}
+	if similar == nil {
+		similar = []storage.SimilarCandidate{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(similarCandidatesResponse{
+		SourceCandidateID: candidateID,
+		TopK:              topK,
+		Similar:           similar,
+	})
+}
