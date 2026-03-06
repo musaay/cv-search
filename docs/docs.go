@@ -56,6 +56,23 @@ const docTemplate = `{
                 }
             }
         },
+        "/candidates/{id}/similar": {
+            "get": {
+                "description": "Returns candidates whose embedding vector is closest to the given candidate's vector. Requires the candidate to have been embedded via a CV upload.",
+                "produces": ["application/json"],
+                "tags": ["candidates"],
+                "summary": "Find similar candidates",
+                "parameters": [
+                    {"type": "integer", "description": "Candidate ID", "name": "id", "in": "path", "required": true},
+                    {"type": "integer", "default": 5, "description": "Number of similar candidates to return (1-20)", "name": "top_k", "in": "query"}
+                ],
+                "responses": {
+                    "200": {"description": "OK", "schema": {"$ref": "#/definitions/api.SimilarCandidatesResponse"}},
+                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
+                    "500": {"description": "Internal Server Error", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
+                }
+            }
+        },
         "/candidates/{id}/interviews": {
             "post": {
                 "description": "Adds a new interview record for a candidate and queues an embedding re-generation",
@@ -526,6 +543,35 @@ const docTemplate = `{
                 }
             }
         },
+        "/search/popular-queries": {
+            "get": {
+                "description": "Returns a list of ready-made search queries derived from the most common skills and seniority levels in the knowledge graph. Cached in-memory for 5 minutes.",
+                "produces": ["application/json"],
+                "tags": ["search"],
+                "summary": "Get popular search queries",
+                "responses": {
+                    "200": {"description": "OK", "schema": {"type": "array", "items": {"type": "string"}}},
+                    "500": {"description": "Internal Server Error", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
+                }
+            }
+        },
+        "/search/suggest": {
+            "get": {
+                "description": "Returns autocomplete suggestions based on a prefix. Searches skill names, company names and current positions in the knowledge graph.",
+                "produces": ["application/json"],
+                "tags": ["search"],
+                "summary": "Autocomplete search suggestions",
+                "parameters": [
+                    {"type": "string", "description": "Search prefix (min 1 char)", "name": "q", "in": "query", "required": true},
+                    {"type": "integer", "default": 8, "description": "Max results (1-20)", "name": "limit", "in": "query"}
+                ],
+                "responses": {
+                    "200": {"description": "OK", "schema": {"type": "array", "items": {"$ref": "#/definitions/storage.SuggestionResult"}}},
+                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
+                    "500": {"description": "Internal Server Error", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
+                }
+            }
+        },
         "/search/hybrid": {
             "post": {
                 "description": "Search candidates using multi-source retrieval with fusion and pure LLM reranking",
@@ -876,6 +922,32 @@ const docTemplate = `{
                 "seniority": {"type": "string"},
                 "interviews": {"type": "array", "items": {"$ref": "#/definitions/storage.Interview"}},
                 "created_at": {"type": "string"}
+            }
+        },
+        "storage.SuggestionResult": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "type": {"type": "string", "description": "One of: skill, company, position"}
+            }
+        },
+        "storage.SimilarCandidate": {
+            "type": "object",
+            "properties": {
+                "candidate_id": {"type": "integer"},
+                "name": {"type": "string"},
+                "current_position": {"type": "string"},
+                "seniority": {"type": "string"},
+                "top_skills": {"type": "array", "items": {"type": "string"}},
+                "similarity": {"type": "number", "description": "Cosine similarity (0-1)"}
+            }
+        },
+        "api.SimilarCandidatesResponse": {
+            "type": "object",
+            "properties": {
+                "source_candidate_id": {"type": "integer"},
+                "top_k": {"type": "integer"},
+                "similar": {"type": "array", "items": {"$ref": "#/definitions/storage.SimilarCandidate"}}
             }
         },
         "storage.CandidateListItem": {

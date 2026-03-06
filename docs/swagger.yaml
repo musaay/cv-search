@@ -228,6 +228,43 @@ definitions:
       seniority:
         type: string
     type: object
+  api.SimilarCandidatesResponse:
+    properties:
+      similar:
+        items:
+          $ref: '#/definitions/storage.SimilarCandidate'
+        type: array
+      source_candidate_id:
+        type: integer
+      top_k:
+        type: integer
+    type: object
+  storage.SimilarCandidate:
+    properties:
+      candidate_id:
+        type: integer
+      current_position:
+        type: string
+      name:
+        type: string
+      seniority:
+        type: string
+      similarity:
+        description: Cosine similarity score (0-1)
+        type: number
+      top_skills:
+        items:
+          type: string
+        type: array
+    type: object
+  storage.SuggestionResult:
+    properties:
+      text:
+        type: string
+      type:
+        description: 'One of: skill, company, position'
+        type: string
+    type: object
   storage.CandidateListItem:
     properties:
       created_at:
@@ -344,6 +381,44 @@ paths:
               type: string
             type: object
       summary: Get candidate detail
+      tags:
+      - candidates
+  /candidates/{id}/similar:
+    get:
+      description: Returns candidates whose embedding vector is closest to the given
+        candidate's vector. Requires the candidate to have been embedded via a CV
+        upload.
+      parameters:
+      - description: Candidate ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - default: 5
+        description: Number of similar candidates to return (1-20)
+        in: query
+        name: top_k
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SimilarCandidatesResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Find similar candidates
       tags:
       - candidates
   /candidates/{id}/interviews:
@@ -744,6 +819,68 @@ paths:
       summary: Search candidates
       tags:
       - candidates
+  /search/popular-queries:
+    get:
+      description: Returns a list of ready-made search queries derived from the most
+        common skills and seniority levels in the knowledge graph. Cached in-memory
+        for 5 minutes.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: string
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get popular search queries
+      tags:
+      - search
+  /search/suggest:
+    get:
+      description: Returns autocomplete suggestions based on a prefix. Searches skill
+        names, company names and current positions in the knowledge graph.
+      parameters:
+      - description: Search prefix (min 1 char)
+        in: query
+        name: q
+        required: true
+        type: string
+      - default: 8
+        description: Max results (1-20)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/storage.SuggestionResult'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Autocomplete search suggestions
+      tags:
+      - search
   /search/hybrid:
     post:
       consumes:
