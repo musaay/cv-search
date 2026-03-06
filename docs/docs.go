@@ -24,6 +24,89 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/candidates": {
+            "get": {
+                "description": "Returns a paginated list of candidates with interview count and latest outcome",
+                "produces": ["application/json"],
+                "tags": ["candidates"],
+                "summary": "List candidates",
+                "parameters": [
+                    {"type": "integer", "default": 50, "description": "Max results to return", "name": "limit", "in": "query"},
+                    {"type": "integer", "default": 0, "description": "Offset for pagination", "name": "offset", "in": "query"}
+                ],
+                "responses": {
+                    "200": {"description": "OK", "schema": {"$ref": "#/definitions/api.ListCandidatesResponse"}},
+                    "500": {"description": "Internal Server Error", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
+                }
+            }
+        },
+        "/candidates/{id}": {
+            "get": {
+                "description": "Returns full candidate profile including all interview records",
+                "produces": ["application/json"],
+                "tags": ["candidates"],
+                "summary": "Get candidate detail",
+                "parameters": [
+                    {"type": "integer", "description": "Candidate ID", "name": "id", "in": "path", "required": true}
+                ],
+                "responses": {
+                    "200": {"description": "OK", "schema": {"$ref": "#/definitions/storage.CandidateDetail"}},
+                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
+                    "404": {"description": "Not Found", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
+                }
+            }
+        },
+        "/candidates/{id}/interviews": {
+            "post": {
+                "description": "Adds a new interview record for a candidate and queues an embedding re-generation",
+                "consumes": ["application/json"],
+                "produces": ["application/json"],
+                "tags": ["candidates"],
+                "summary": "Create interview",
+                "parameters": [
+                    {"type": "integer", "description": "Candidate ID", "name": "id", "in": "path", "required": true},
+                    {"description": "Interview data", "name": "request", "in": "body", "required": true, "schema": {"$ref": "#/definitions/api.InterviewRequest"}}
+                ],
+                "responses": {
+                    "201": {"description": "Created", "schema": {"type": "object", "additionalProperties": true}},
+                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
+                    "500": {"description": "Internal Server Error", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
+                }
+            }
+        },
+        "/candidates/{id}/interviews/{iid}": {
+            "put": {
+                "description": "Updates an existing interview record and queues an embedding re-generation",
+                "consumes": ["application/json"],
+                "produces": ["application/json"],
+                "tags": ["candidates"],
+                "summary": "Update interview",
+                "parameters": [
+                    {"type": "integer", "description": "Candidate ID", "name": "id", "in": "path", "required": true},
+                    {"type": "integer", "description": "Interview ID", "name": "iid", "in": "path", "required": true},
+                    {"description": "Updated interview data", "name": "request", "in": "body", "required": true, "schema": {"$ref": "#/definitions/api.InterviewRequest"}}
+                ],
+                "responses": {
+                    "200": {"description": "OK", "schema": {"type": "object", "additionalProperties": true}},
+                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
+                    "404": {"description": "Not Found", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
+                }
+            },
+            "delete": {
+                "description": "Deletes an interview record and queues an embedding re-generation",
+                "tags": ["candidates"],
+                "summary": "Delete interview",
+                "parameters": [
+                    {"type": "integer", "description": "Candidate ID", "name": "id", "in": "path", "required": true},
+                    {"type": "integer", "description": "Interview ID", "name": "iid", "in": "path", "required": true}
+                ],
+                "responses": {
+                    "204": {"description": "No Content"},
+                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
+                    "404": {"description": "Not Found", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
+                }
+            }
+        },
         "/cv/batch/{batch_id}": {
             "get": {
                 "description": "Get the processing status of all CVs uploaded in a bulk upload batch",
@@ -742,6 +825,69 @@ const docTemplate = `{
                         "type": "string"
                     }
                 }
+            }
+        },
+        "api.InterviewRequest": {
+            "type": "object",
+            "required": ["interview_date"],
+            "properties": {
+                "interview_date": {"type": "string", "description": "Required. Format YYYY-MM-DD"},
+                "team": {"type": "string"},
+                "interviewer_name": {"type": "string"},
+                "interview_type": {"type": "string", "description": "One of: technical, hr, case_study, other"},
+                "notes": {"type": "string"},
+                "outcome": {"type": "string", "description": "One of: passed, failed, pending"}
+            }
+        },
+        "api.ListCandidatesResponse": {
+            "type": "object",
+            "properties": {
+                "candidates": {"type": "array", "items": {"$ref": "#/definitions/storage.CandidateListItem"}},
+                "total": {"type": "integer"},
+                "limit": {"type": "integer"},
+                "offset": {"type": "integer"}
+            }
+        },
+        "storage.Interview": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "candidate_id": {"type": "integer"},
+                "interview_date": {"type": "string"},
+                "team": {"type": "string"},
+                "interviewer_name": {"type": "string"},
+                "interview_type": {"type": "string", "description": "technical, hr, case_study, other"},
+                "notes": {"type": "string"},
+                "outcome": {"type": "string", "description": "passed, failed, pending"},
+                "created_at": {"type": "string"},
+                "updated_at": {"type": "string"}
+            }
+        },
+        "storage.CandidateDetail": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "name": {"type": "string"},
+                "email": {"type": "string"},
+                "phone": {"type": "string"},
+                "location": {"type": "string"},
+                "graph_node_id": {"type": "integer"},
+                "current_position": {"type": "string"},
+                "seniority": {"type": "string"},
+                "interviews": {"type": "array", "items": {"$ref": "#/definitions/storage.Interview"}},
+                "created_at": {"type": "string"}
+            }
+        },
+        "storage.CandidateListItem": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "name": {"type": "string"},
+                "current_position": {"type": "string"},
+                "seniority": {"type": "string"},
+                "interview_count": {"type": "integer"},
+                "latest_outcome": {"type": "string"},
+                "created_at": {"type": "string"}
             }
         }
     }
