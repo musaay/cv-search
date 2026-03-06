@@ -3,10 +3,10 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
+	"cv-search/internal/config"
 	"cv-search/internal/cv"
 	"cv-search/internal/graphrag"
 	"cv-search/internal/llm"
@@ -80,11 +80,16 @@ type API struct {
 	cvProcessingQueue    chan CVProcessingJob           // Background queue for async CV processing (LLM + Graph)
 	embeddingQueue       chan EmbeddingJob              // Background queue for async embedding generation
 	batchStore           *BatchStore                    // In-memory store for bulk upload batches
+
+	// Community detection debounce — prevents redundant full recomputes when
+	// multiple CVs are uploaded in quick succession.
+	commDetectMu   sync.Mutex
+	lastCommDetect time.Time
 }
 
-func NewAPI(db *storage.DB) *API {
+func NewAPI(db *storage.DB, cfg *config.Config) *API {
 	// Initialize CV parser
-	uploadsDir := os.Getenv("UPLOADS_DIR")
+	uploadsDir := cfg.UploadsDir
 	if uploadsDir == "" {
 		uploadsDir = "./uploads"
 	}
@@ -92,22 +97,9 @@ func NewAPI(db *storage.DB) *API {
 
 	// Initialize LLM service (if configured)
 	var llmSvc *llm.Service
-	llmProvider := os.Getenv("LLM_PROVIDER")
 
-	if llmProvider != "" && llmProvider != "none" {
-		llmModel := os.Getenv("LLM_MODEL")
-		llmAPIKey := ""
-
-		// Get API key based on provider
-		if llmProvider == "groq" {
-			llmAPIKey = os.Getenv("GROQ_API_KEY")
-		} else if llmProvider == "openai" {
-			llmAPIKey = os.Getenv("OPENAI_API_KEY")
-		}
-
-		if llmAPIKey != "" {
-			llmSvc = llm.NewService(llmProvider, llmAPIKey, llmModel)
-		}
+	if cfg.LLMProvider != "" && cfg.LLMProvider != "none" && cfg.LLMAPIKey != "" {
+		llmSvc = llm.NewService(cfg.LLMProvider, cfg.LLMAPIKey, cfg.LLMModel)
 	}
 
 	// Initialize graph builder
@@ -122,12 +114,11 @@ func NewAPI(db *storage.DB) *API {
 		llmAdapter := graphrag.NewLLMAdapter(llmSvc)
 		llmSearchEngine = graphrag.NewLLMSearchEngine(db.GetConnection(), llmAdapter)
 
-		// Initialize Enhanced Search Engine with OpenAI embeddings
-		openaiAPIKey := os.Getenv("OPENAI_API_KEY")
-		if openaiAPIKey != "" && openaiAPIKey != "your_openai_api_key_here" {
-			enhancedSearchEngine = graphrag.NewEnhancedSearchEngine(db.GetConnection(), llmAdapter, openaiAPIKey)
-			// Initialize Hybrid Search Engine (BM25 + Vector + Graph + LLM)
-			hybridSearchEngine = graphrag.NewHybridSearchEngine(db.GetConnection(), llmAdapter, openaiAPIKey)
+		// Embeddings always require OpenAI key (even when LLM provider is Groq)
+		openaiKey := cfg.OpenAIAPIKey
+		if openaiKey != "" && openaiKey != "your_openai_api_key_here" {
+			enhancedSearchEngine = graphrag.NewEnhancedSearchEngine(db.GetConnection(), llmAdapter, openaiKey)
+			hybridSearchEngine = graphrag.NewHybridSearchEngine(db.GetConnection(), llmAdapter, openaiKey, cfg.DisableLLMCache)
 		}
 	}
 

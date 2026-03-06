@@ -21,12 +21,20 @@ type CacheEntry struct {
 	Timestamp time.Time
 }
 
-// NewLLMCache creates a new cache with specified TTL
+// NewLLMCache creates a new cache with specified TTL.
+// Starts a background goroutine to evict expired entries every 10 minutes.
 func NewLLMCache(ttl time.Duration) *LLMCache {
-	return &LLMCache{
+	c := &LLMCache{
 		entries: make(map[string]*CacheEntry),
 		ttl:     ttl,
 	}
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		for range ticker.C {
+			c.CleanExpired()
+		}
+	}()
+	return c
 }
 
 // Get retrieves cached scores if available and not expired
@@ -117,10 +125,12 @@ type semanticCacheEntry struct {
 	Timestamp      time.Time
 }
 
+const semanticCacheMaxSize = 500 // max in-memory entries; oldest are evicted when exceeded
+
 // NewSemanticCache creates a semantic cache with given TTL and similarity threshold.
 func NewSemanticCache(ttl time.Duration, threshold float64) *SemanticCache {
 	return &SemanticCache{
-		entries:   make([]*semanticCacheEntry, 0),
+		entries:   make([]*semanticCacheEntry, 0, 64),
 		ttl:       ttl,
 		threshold: threshold,
 	}
@@ -154,6 +164,8 @@ func (c *SemanticCache) Get(queryEmbedding []float32) ([]FusedCandidate, string,
 }
 
 // Set stores results for a query embedding, evicting expired entries first.
+// If the cache still exceeds semanticCacheMaxSize after expiry eviction, the oldest
+// entries are trimmed to keep memory bounded.
 func (c *SemanticCache) Set(queryEmbedding []float32, queryText string, results []FusedCandidate) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -167,6 +179,12 @@ func (c *SemanticCache) Set(queryEmbedding []float32, queryText string, results 
 		}
 	}
 	c.entries = valid
+
+	// If still over max capacity, trim oldest entries (entries are appended chronologically)
+	if len(c.entries) >= semanticCacheMaxSize {
+		trimTo := semanticCacheMaxSize - semanticCacheMaxSize/4 // trim to 75% capacity
+		c.entries = c.entries[len(c.entries)-trimTo:]
+	}
 
 	c.entries = append(c.entries, &semanticCacheEntry{
 		QueryEmbedding: queryEmbedding,

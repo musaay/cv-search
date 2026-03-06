@@ -18,16 +18,16 @@ type Candidate struct {
 // Interview represents a single interview session for a candidate.
 // Multiple interviews can exist per candidate (different teams, dates, rounds).
 type Interview struct {
-	ID              int        `json:"id"`
-	CandidateID     int        `json:"candidate_id"`
-	InterviewDate   time.Time  `json:"interview_date"`
-	Team            string     `json:"team,omitempty"`
-	InterviewerName string     `json:"interviewer_name,omitempty"`
-	InterviewType   string     `json:"interview_type,omitempty"` // technical, hr, case_study, other
-	Notes           string     `json:"notes,omitempty"`
-	Outcome         string     `json:"outcome,omitempty"` // passed, failed, pending
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID              int       `json:"id"`
+	CandidateID     int       `json:"candidate_id"`
+	InterviewDate   time.Time `json:"interview_date"`
+	Team            string    `json:"team,omitempty"`
+	InterviewerName string    `json:"interviewer_name,omitempty"`
+	InterviewType   string    `json:"interview_type,omitempty"` // technical, hr, case_study, other
+	Notes           string    `json:"notes,omitempty"`
+	Outcome         string    `json:"outcome,omitempty"` // passed, failed, pending
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // InterviewSummary is a lightweight view of an interview for embedding in search results.

@@ -13,14 +13,16 @@ import (
 // LLMScorer performs pure LLM-based candidate scoring
 // No local heuristics, only LLM intelligence
 type LLMScorer struct {
-	llm   LLMClient
-	cache *LLMCache
+	llm          LLMClient
+	cache        *LLMCache
+	disableCache bool
 }
 
-func NewLLMScorer(llm LLMClient) *LLMScorer {
+func NewLLMScorer(llm LLMClient, disableCache bool) *LLMScorer {
 	return &LLMScorer{
-		llm:   llm,
-		cache: NewLLMCache(30 * time.Minute), // Match semantic cache TTL
+		llm:          llm,
+		cache:        NewLLMCache(30 * time.Minute),
+		disableCache: disableCache,
 	}
 }
 
@@ -57,9 +59,13 @@ func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidate
 		candidateIDs[i] = c.PersonID
 	}
 
-	if cachedScores, found := s.cache.Get(query, candidateIDs); found {
-		log.Printf("[LLMScorer] Cache HIT for query: %s (%d candidates)", query, len(cachedScores))
-		return cachedScores, nil
+	if !s.disableCache {
+		if cachedScores, found := s.cache.Get(query, candidateIDs); found {
+			log.Printf("[LLMScorer] Cache HIT for query: %s (%d candidates)", query, len(cachedScores))
+			return cachedScores, nil
+		}
+	} else {
+		log.Printf("[LLMScorer] Cache disabled — calling LLM directly")
 	}
 
 	log.Printf("[LLMScorer] Scoring %d candidates in a single call for consistent ranking", len(candidates))
@@ -81,19 +87,31 @@ func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidate
 
 	log.Printf("[LLMScorer] Successfully scored %d candidates in a single call", len(allScores))
 
-	// Cache the combined results
-	s.cache.Set(query, candidateIDs, allScores)
+	// Cache the combined results (skipped when cache is disabled, e.g. local dev)
+	if !s.disableCache {
+		s.cache.Set(query, candidateIDs, allScores)
+	}
 
 	return allScores, nil
 }
 
 // buildScoringPrompt creates a lean, HR-focused ranking prompt.
 // No hardcoded role rules — LLM evaluates fit based on skills, title, and experience.
-func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate, _ []string) string {
+// communitySummaries contains LLM-generated summaries of the most relevant graph communities
+// for this query — injected as global context so the LLM understands the talent pool landscape.
+func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate, communitySummaries []string) string {
 	var b strings.Builder
 
 	b.WriteString("You are a senior technical recruiter. Score each candidate for the following role.\n\n")
 	b.WriteString("Role: " + query + "\n\n")
+
+	if len(communitySummaries) > 0 {
+		b.WriteString("Talent Pool Context (relevant community summaries):\n")
+		for i, summary := range communitySummaries {
+			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, summary))
+		}
+		b.WriteString("\n")
+	}
 	b.WriteString("Scoring (0-100):\n")
 	b.WriteString("- Skill depth: years of experience and proficiency level in the required skill (most important)\n")
 	b.WriteString("- Skills breadth: does their overall tech stack align with the role?\n")

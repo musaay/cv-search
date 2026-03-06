@@ -136,9 +136,10 @@ func FindCommunitiesByQuery(query string) []string {
 		result = append(result, communityID)
 	}
 
-	// If no specific community matched, return all (broad search)
+	// If no specific community matched, return empty slice so the community filter
+	// is a no-op rather than accepting every community (which would filter nothing meaningful).
 	if len(result) == 0 {
-		return []string{"backend", "frontend", "mobile", "devops", "data", "ml-ai", "qa-test", "analyst", "general"}
+		return []string{}
 	}
 
 	return result

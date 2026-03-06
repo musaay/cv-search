@@ -235,11 +235,13 @@ func (s *EmbeddingService) similaritySearchWithEmbedding(ctx context.Context, qu
 		FROM graph_nodes
 		WHERE embedding IS NOT NULL 
 		  AND node_type = 'person'
-		ORDER BY similarity ASC
+		ORDER BY similarity DESC
 		LIMIT $2
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, embeddingJSON, topK)
+	// lib/pq sends []byte as bytea; pgvector's ::vector cast requires text.
+	// Pass string(embeddingJSON) so it is sent as a text parameter.
+	rows, err := s.db.QueryContext(ctx, query, string(embeddingJSON), topK)
 	if err != nil {
 		return nil, nil, err
 	}

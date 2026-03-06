@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 )
@@ -41,6 +42,32 @@ type EducationNode struct {
 	Institution string `json:"institution"`
 	Degree      string `json:"degree"`
 	Field       string `json:"field"`
+}
+
+// SearchCriteria holds structured search parameters extracted from a natural language query.
+type SearchCriteria struct {
+	Skills        []string `json:"skills"`         // Required + preferred skills combined
+	Companies     []string `json:"companies"`      // Company names
+	Positions     []string `json:"positions"`      // Job titles
+	Seniority     string   `json:"seniority"`      // Junior|Mid-level|Senior|Lead|Architect
+	Education     []string `json:"education"`      // Institution or degree
+	MinExperience *int     `json:"min_experience"` // Minimum years
+	MaxExperience *int     `json:"max_experience"` // Maximum years
+	Location      []string `json:"location"`       // Cities/countries
+
+	// Legacy fields kept for backward compatibility
+	RequiredSkills  []string               `json:"required_skills,omitempty"`
+	PreferredSkills []string               `json:"preferred_skills,omitempty"`
+	Weights         ScoringWeights         `json:"weights,omitempty"`
+	CustomFilters   map[string]interface{} `json:"custom_filters,omitempty"`
+}
+
+// ScoringWeights configures relative importance of match dimensions (unused in LLM-scored path).
+type ScoringWeights struct {
+	SkillWeight      float64 `json:"skill_weight"`
+	ExperienceWeight float64 `json:"experience_weight"`
+	LocationWeight   float64 `json:"location_weight"`
+	EducationWeight  float64 `json:"education_weight"`
 }
 
 // GraphQuerier performs graph traversal based on search criteria
@@ -104,21 +131,14 @@ func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria)
 
 		// Fetch related nodes (skills, companies, education)
 		q.enrichCandidate(ctx, &result)
-
-		// Calculate match score
-		result.MatchScore, result.MatchReasons = q.calculateMatch(&result, criteria)
-
+		// MatchScore left at 0.0 — all scoring is handled by LLM in hybrid_search.go
 		results = append(results, result)
 	}
 
-	// Sort by match score (highest first)
-	for i := 0; i < len(results)-1; i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].MatchScore > results[i].MatchScore {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	// Sort by match score descending (all zeros currently, but preserves order stability)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].MatchScore > results[j].MatchScore
+	})
 
 	log.Printf("[GraphRAG] Found %d candidates", len(results))
 	return results, nil
@@ -327,13 +347,4 @@ func (q *GraphQuerier) enrichCandidate(ctx context.Context, result *CandidateRes
 			}
 		}
 	}
-}
-
-// calculateMatch is DEPRECATED - Use LLM-based scoring instead
-// Keeping for backward compatibility, but always returns 0
-// This function previously used hard-coded heuristics which are now replaced by pure LLM scoring
-func (q *GraphQuerier) calculateMatch(result *CandidateResult, criteria *SearchCriteria) (float64, []string) {
-	// NO MORE LOCAL SCORING!
-	// All scoring is done by LLM in hybrid_search.go -> LLMScorer
-	return 0.0, []string{"Scored by LLM"}
 }

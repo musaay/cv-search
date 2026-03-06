@@ -11,6 +11,7 @@ import (
 
 	_ "cv-search/docs" // Swagger docs
 	"cv-search/internal/api"
+	"cv-search/internal/config"
 	"cv-search/internal/storage"
 
 	"github.com/joho/godotenv"
@@ -38,15 +39,15 @@ func main() {
 		log.Println("Warning: .env file not found, using environment variables")
 	}
 
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
+	cfg := config.LoadConfig()
+
+	if cfg.DatabaseURL == "" {
 		log.Fatal("set DATABASE_URL environment variable (e.g. postgres://user:pass@host:5432/dbname?sslmode=disable)")
 	}
 
 	log.Println("Connecting to database...")
-	log.Println("DSN:", dsn)
 
-	db, err := storage.NewDB(dsn)
+	db, err := storage.NewDB(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal("db open:", err)
 	}
@@ -54,7 +55,7 @@ func main() {
 
 	log.Println("Database connected successfully!")
 
-	apiSrv := api.NewAPI(db)
+	apiSrv := api.NewAPI(db, cfg)
 	router := api.NewRouter(apiSrv)
 
 	port := os.Getenv("PORT")

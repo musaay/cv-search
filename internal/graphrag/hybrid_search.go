@@ -21,17 +21,19 @@ type HybridSearchEngine struct {
 	llm              LLMClient
 	scorer           *LLMScorer     // persistent across requests so its LLM cache survives between searches
 	semanticCache    *SemanticCache // skip full pipeline for semantically identical queries
+	disableCache     bool           // when true, both semantic and LLM caches are bypassed (local dev)
 }
 
-func NewHybridSearchEngine(db *sql.DB, llm LLMClient, openaiKey string) *HybridSearchEngine {
+func NewHybridSearchEngine(db *sql.DB, llm LLMClient, openaiKey string, disableCache bool) *HybridSearchEngine {
 	return &HybridSearchEngine{
 		db:               db,
 		bm25Searcher:     NewBM25Searcher(db),
 		embeddingService: NewEmbeddingService(openaiKey, db),
 		graphQuerier:     NewGraphQuerier(db),
 		llm:              llm,
-		scorer:           NewLLMScorer(llm),
+		scorer:           NewLLMScorer(llm, disableCache),
 		semanticCache:    NewSemanticCache(30*time.Minute, 0.95),
+		disableCache:     disableCache,
 	}
 }
 
@@ -121,7 +123,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	var queryEmbedding []float32
 	var embErr error
 	queryEmbedding, embErr = h.embeddingService.GenerateEmbedding(ctx, query)
-	if embErr == nil {
+	if embErr == nil && !h.disableCache {
 		if cached, cachedQuery, found := h.semanticCache.Get(queryEmbedding); found {
 			log.Printf("[HybridSearch] Semantic cache HIT (similar to: %q) → %d cached results", cachedQuery, len(cached))
 			return cached, nil
@@ -384,8 +386,8 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	log.Printf("[HybridSearch] Final ranking complete. Top candidate: %s (LLM Score: %.2f)",
 		validCandidates[0].Name, validCandidates[0].LLMScore)
 
-	// Store results in semantic cache for future similar queries
-	if embErr == nil {
+	// Store results in semantic cache for future similar queries (skipped in local dev)
+	if embErr == nil && !h.disableCache {
 		h.semanticCache.Set(queryEmbedding, query, validCandidates)
 		log.Printf("[HybridSearch] Results stored in semantic cache (30m TTL)")
 	}
@@ -711,14 +713,14 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 		}
 	}
 
-	// BATCH 3: Load all companies in one query
+	// BATCH 3: Load all companies in one query (both current and past employers)
 	companyQuery := fmt.Sprintf(`
-		SELECT p.node_id, c.properties, e.properties
+		SELECT p.node_id, c.properties, e.properties, e.edge_type
 		FROM graph_nodes p
 		JOIN graph_edges e ON p.id = e.source_node_id
 		JOIN graph_nodes c ON e.target_node_id = c.id
 		WHERE p.node_id IN %s
-		  AND e.edge_type = 'WORKED_AT'
+		  AND (e.edge_type = 'WORKED_AT' OR e.edge_type = 'WORKS_AT')
 		  AND c.node_type = 'company'
 	`, inClause)
 
@@ -728,9 +730,9 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 	} else {
 		defer companyRows.Close()
 		for companyRows.Next() {
-			var personID string
+			var personID, edgeType string
 			var companyPropsJSON, edgePropsJSON []byte
-			if err := companyRows.Scan(&personID, &companyPropsJSON, &edgePropsJSON); err != nil {
+			if err := companyRows.Scan(&personID, &companyPropsJSON, &edgePropsJSON, &edgeType); err != nil {
 				continue
 			}
 
@@ -757,6 +759,10 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 				if isCurr, ok := edgeProps["is_current"].(bool); ok {
 					company.IsCurrent = isCurr
 				}
+			}
+			// WORKS_AT always means current employer regardless of stored props
+			if edgeType == "WORKS_AT" {
+				company.IsCurrent = true
 			}
 
 			candidates[idx].Companies = append(candidates[idx].Companies, company)

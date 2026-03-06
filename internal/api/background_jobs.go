@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const communityDetectDebounce = 30 * time.Second
+
 // EmbeddingJob represents a background embedding task
 type EmbeddingJob struct {
 	CVID      int64
@@ -79,6 +81,10 @@ func (a *API) embeddingWorker() {
 		duration := time.Since(job.Timestamp)
 		log.Printf("[EmbeddingWorker] Completed CV %d: %d success, %d failed (took %v)",
 			job.CVID, successCount, failCount, duration)
+
+		// After embeddings are ready, rebuild communities so the new CV
+		// is assigned to the right cluster immediately.
+		a.triggerCommunityDetection()
 	}
 }
 
@@ -247,4 +253,34 @@ func (a *API) QueueEmbeddingJob(cvID int64, nodeIDs []string) {
 	default:
 		log.Printf("[BackgroundJobs] Queue full! Dropping embedding job for CV %d", cvID)
 	}
+}
+
+// triggerCommunityDetection runs a full community detection pass in a background
+// goroutine. Debounced by communityDetectDebounce — if it ran recently (e.g. bulk
+// upload of 10 CVs), the duplicate triggers are silently dropped.
+func (a *API) triggerCommunityDetection() {
+	if a.enhancedSearchEngine == nil {
+		return // community detection requires LLM to be configured
+	}
+
+	a.commDetectMu.Lock()
+	if time.Since(a.lastCommDetect) < communityDetectDebounce {
+		a.commDetectMu.Unlock()
+		log.Printf("[CommunityDetect] Skipped (ran %.0fs ago)", time.Since(a.lastCommDetect).Seconds())
+		return
+	}
+	a.lastCommDetect = time.Now()
+	a.commDetectMu.Unlock()
+
+	go func() {
+		log.Printf("[CommunityDetect] Starting automatic community detection after CV upload...")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		if err := a.enhancedSearchEngine.GetCommunityDetector().DetectCommunities(ctx, 0); err != nil {
+			log.Printf("[CommunityDetect] Failed: %v", err)
+		} else {
+			log.Printf("[CommunityDetect] Completed successfully")
+		}
+	}()
 }

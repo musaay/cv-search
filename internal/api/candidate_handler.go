@@ -23,12 +23,12 @@ type listCandidatesResponse struct {
 }
 
 type interviewRequest struct {
-	InterviewDate   string `json:"interview_date"`    // "2026-03-06"
+	InterviewDate   string `json:"interview_date"` // "2026-03-06"
 	Team            string `json:"team"`
 	InterviewerName string `json:"interviewer_name"`
-	InterviewType   string `json:"interview_type"`    // technical, hr, case_study, other
+	InterviewType   string `json:"interview_type"` // technical, hr, case_study, other
 	Notes           string `json:"notes"`
-	Outcome         string `json:"outcome"`           // passed, failed, pending
+	Outcome         string `json:"outcome"` // passed, failed, pending
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

@@ -11,9 +11,10 @@ import (
 // corsMiddleware adds CORS headers to every response.
 // Allowed origins are read from the CORS_ORIGINS env variable as a comma-separated list.
 // Examples:
-//   CORS_ORIGINS=*                                          → allow all (dev default)
-//   CORS_ORIGINS=https://app.example.com                   → single origin
-//   CORS_ORIGINS=https://app.example.com,https://admin.example.com → multiple origins
+//
+//	CORS_ORIGINS=*                                          → allow all (dev default)
+//	CORS_ORIGINS=https://app.example.com                   → single origin
+//	CORS_ORIGINS=https://app.example.com,https://admin.example.com → multiple origins
 func corsMiddleware(next http.Handler) http.Handler {
 	raw := os.Getenv("CORS_ORIGINS")
 	if raw == "" {
