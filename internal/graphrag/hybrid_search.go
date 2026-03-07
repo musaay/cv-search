@@ -293,8 +293,13 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		}
 	}
 	if len(queryCommunities) == 0 && searchCriteria != nil && len(searchCriteria.Positions) > 0 {
-		queryCommunities = PositionsToCommunities(searchCriteria.Positions)
-		log.Printf("[HybridSearch] Communities from LLM positions %v: %v", searchCriteria.Positions, queryCommunities)
+		dbPosCommunities, posErr := h.embeddingService.FindCommunitiesByPositionTitles(ctx, searchCriteria.Positions)
+		if posErr != nil {
+			log.Printf("[HybridSearch] FindCommunitiesByPositionTitles failed (non-fatal): %v", posErr)
+		} else if len(dbPosCommunities) > 0 {
+			queryCommunities = dbPosCommunities
+			log.Printf("[HybridSearch] Communities from position title DB lookup %v: %v", searchCriteria.Positions, queryCommunities)
+		}
 	}
 	if len(queryCommunities) == 0 {
 		queryCommunities = FindCommunitiesByQuery(query)
@@ -386,7 +391,6 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	llmScores, err := h.scorer.ScoreCandidates(ctx, query, fusedCandidates, queryCommunityContext)
 	if err != nil {
 		log.Printf("[HybridSearch] LLM scoring failed, returning fusion scores: %v", err)
-		// Fallback: use fusion scores
 		for i := range fusedCandidates {
 			fusedCandidates[i].LLMScore = fusedCandidates[i].FusionScore
 		}
@@ -404,7 +408,6 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 			fusedCandidates[i].LLMScore = score.Score
 			fusedCandidates[i].LLMReasoning = score.Reasoning
 		} else {
-			// If LLM didn't score this candidate, use fusion score
 			fusedCandidates[i].LLMScore = fusedCandidates[i].FusionScore
 		}
 	}

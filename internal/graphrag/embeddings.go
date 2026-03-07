@@ -347,6 +347,70 @@ func (s *EmbeddingService) ReEmbedPersonNodeByID(ctx context.Context, graphNodeI
 // OpenAI text-embedding-3-small: same-domain ≈ 0.1–0.3, cross-domain ≈ 0.4–0.6.
 const communityDistanceThreshold = 0.45
 
+// FindCommunitiesByPositionTitles finds the cluster_X community IDs that best match
+// a list of LLM-extracted position titles (e.g. ["analyst", "analist"]).
+// It queries the DB directly: for each keyword it finds which cluster contains the most
+// candidates whose current_position matches that keyword.
+// Returns at most 2 unique cluster IDs. Returns empty slice (not error) if none found.
+func (s *EmbeddingService) FindCommunitiesByPositionTitles(ctx context.Context, positions []string) ([]string, error) {
+	seen := make(map[string]bool)
+	var result []string
+
+	// stopWords are skipped when splitting multi-word positions into individual search terms
+	stopWords := map[string]bool{"and": true, "or": true, "the": true, "with": true, "in": true, "at": true, "of": true, "için": true, "veya": true, "bilen": true, "olan": true}
+
+	// Build search terms: the full phrase + each meaningful individual word
+	buildTerms := func(pos string) []string {
+		pos = strings.TrimSpace(strings.ToLower(pos))
+		terms := []string{pos}
+		words := strings.Fields(pos)
+		if len(words) > 1 {
+			for _, w := range words {
+				if len(w) >= 4 && !stopWords[w] {
+					terms = append(terms, w)
+				}
+			}
+		}
+		return terms
+	}
+
+	queryCluster := func(term string) {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT gc.community_id, COUNT(*) AS cnt
+			FROM community_members cm
+			JOIN graph_nodes gn ON gn.id = cm.node_id
+			JOIN graph_communities gc ON gc.id = cm.community_id
+			WHERE gn.node_type = 'person'
+			  AND gc.community_id LIKE 'cluster_%'
+			  AND LOWER(gn.properties->>'current_position') LIKE '%' || $1 || '%'
+			GROUP BY gc.community_id
+			ORDER BY cnt DESC
+			LIMIT 3
+		`, term)
+		if err != nil {
+			log.Printf("[CommunityPositionLookup] query error for %q: %v", term, err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var communityID string
+			var cnt int
+			if err := rows.Scan(&communityID, &cnt); err == nil && !seen[communityID] {
+				log.Printf("[CommunityPositionLookup] %q → %s (%d members)", term, communityID, cnt)
+				seen[communityID] = true
+				result = append(result, communityID)
+			}
+		}
+	}
+
+	for _, pos := range positions {
+		for _, term := range buildTerms(pos) {
+			queryCluster(term)
+		}
+	}
+	return result, nil
+}
+
 func (s *EmbeddingService) FindCommunitiesByEmbedding(ctx context.Context, queryEmbedding []float32, topK int) ([]string, error) {
 	embeddingJSON, _ := json.Marshal(queryEmbedding)
 
