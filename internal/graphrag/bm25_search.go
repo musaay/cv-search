@@ -88,5 +88,3 @@ func prepareTSQuery(query string) string {
 	// AND would require ALL terms in one row, which is too strict for skill lists.
 	return strings.Join(filtered, " | ")
 }
-
-

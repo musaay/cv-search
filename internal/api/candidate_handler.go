@@ -285,14 +285,15 @@ func (a *API) DeleteInterviewHandler(w http.ResponseWriter, r *http.Request) {
 // ─── Similar Candidates ───────────────────────────────────────────────────────
 
 type similarCandidatesResponse struct {
-	SourceCandidateID int                      `json:"source_candidate_id"`
-	TopK              int                      `json:"top_k"`
+	SourceCandidateID int                        `json:"source_candidate_id"`
+	TopK              int                        `json:"top_k"`
 	Similar           []storage.SimilarCandidate `json:"similar"`
 }
 
 // SimilarCandidatesHandler returns candidates whose embedding vector is closest
 // to the requested candidate's vector.
-//   GET /api/candidates/{id}/similar?top_k=5
+//
+//	GET /api/candidates/{id}/similar?top_k=5
 //
 // Requires the candidate to have been embedded (via a CV upload). Returns
 // at most top_k results (default 5, max 20). Candidates without an embedding

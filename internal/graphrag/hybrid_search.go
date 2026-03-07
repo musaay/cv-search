@@ -142,6 +142,11 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	// Clear ALL prepared statements once before parallel retrieval to prevent cache collisions
 	h.db.Exec("DEALLOCATE ALL")
 
+	// Translate non-ASCII queries (e.g. Turkish) to English for BM25 keyword matching.
+	// Vector search and LLM scoring keep the original query — embeddings are multilingual
+	// and the LLM scorer understands Turkish context fine.
+	bm25Query := h.translateToEnglish(query)
+
 	// Step 1: Parallel retrieval from 3 sources
 	bm25ResultsChan := make(chan []BM25Result)
 	vectorResultsChan := make(chan []VectorSearchResult)
@@ -155,7 +160,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 
 	// BM25 search
 	go func() {
-		results, err := h.bm25Searcher.Search(ctx, query, config.TopK)
+		results, err := h.bm25Searcher.Search(ctx, bm25Query, config.TopK)
 		if err != nil {
 			errChan <- fmt.Errorf("bm25 failed: %w", err)
 			return
@@ -867,4 +872,31 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 			}
 		}
 	}
+}
+// translateToEnglish translates a query to English if it contains non-ASCII characters
+// (e.g. Turkish). BM25 does exact token matching against English CVs, so without
+// translation Turkish queries always produce bm25_score=0. Returns original on error.
+func (h *HybridSearchEngine) translateToEnglish(query string) string {
+	if !containsNonASCII(query) {
+		return query
+	}
+	prompt := "Translate this search query to English for CV/resume search. Return only the translated query, nothing else.\n\nQuery: " + query
+	translated, err := h.llm.Generate(prompt)
+	if err != nil || strings.TrimSpace(translated) == "" {
+		log.Printf("[HybridSearch] Query translation failed, using original for BM25: %v", err)
+		return query
+	}
+	translated = strings.TrimSpace(translated)
+	log.Printf("[HybridSearch] BM25 query translated: %q → %q", query, translated)
+	return translated
+}
+
+// containsNonASCII reports whether s contains any non-ASCII rune (> 127).
+func containsNonASCII(s string) bool {
+	for _, r := range s {
+		if r > 127 {
+			return true
+		}
+	}
+	return false
 }

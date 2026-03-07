@@ -53,3 +53,6 @@ Thumbs.db
 README.old.md
 /api
 TODO.md
+
+# Local integration test scripts (not tracked in repo)
+scripts/search_tests.sh

@@ -13,7 +13,8 @@ import (
 const popularQueriesTTL = 5 * time.Minute
 
 // SuggestHandler returns autocomplete suggestions for the search box.
-//   GET /api/search/suggest?q=<prefix>&limit=8
+//
+//	GET /api/search/suggest?q=<prefix>&limit=8
 //
 // Searches skill names, company names, and person current_positions in the knowledge
 // graph. Returns at most `limit` results (default 8, max 20).
@@ -61,7 +62,8 @@ func (a *API) SuggestHandler(w http.ResponseWriter, r *http.Request) {
 
 // PopularQueriesHandler returns a list of ready-made search queries derived from
 // the most common skills and seniority levels in the knowledge graph.
-//   GET /api/search/popular-queries
+//
+//	GET /api/search/popular-queries
 //
 // Results are cached for 5 minutes — cheap to call on page load.
 func (a *API) PopularQueriesHandler(w http.ResponseWriter, r *http.Request) {

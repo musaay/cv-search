@@ -950,6 +950,7 @@ func (db *DB) GetCandidatesByPersonNodeIDs(ctx context.Context, personNodeIDs []
 
 	return results, nil
 }
+
 // GetPersonNodeIDString returns the string node_id (e.g. "person_2") for an integer
 // graph_node_id that is stored on the candidates table. Returns "" if not found.
 func (db *DB) GetPersonNodeIDString(ctx context.Context, graphNodeID int) (string, error) {

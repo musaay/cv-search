@@ -125,6 +125,20 @@ If something is risky:
 - For backend changes: build must succeed + at least one curl/HTTP test against the affected endpoint must return expected results before pushing.
 - If a test cannot be run (e.g., no server, no data), call it out explicitly and do not proceed with push.
 
+### Search Quality Tests — MANDATORY before every push
+
+Before ANY `git push`, run the integration test suite and confirm all tests pass:
+
+```bash
+./scripts/search_tests.sh
+```
+
+- The script must exit with code 0 ("All tests passed. Safe to push.").
+- If any test fails, fix the regression first. Do NOT push with failing tests.
+- Tests cover: Java Developer ranking, banking analyst queries, Turkish queries, PO queries, architect queries, and role-type guard checks.
+- To test against production instead of local: `BASE_URL=https://cv-search-production.up.railway.app ./scripts/search_tests.sh`
+- When adding new search-affecting changes (prompts, scoring, BM25, embeddings), add new test cases to `scripts/search_tests.sh` before pushing.
+
 ---
 
 Goal:

@@ -102,8 +102,8 @@ func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidate
 func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate, communitySummaries []string) string {
 	var b strings.Builder
 
-	b.WriteString("You are a senior technical recruiter. Score each candidate for the following role.\n\n")
-	b.WriteString("Role: " + query + "\n\n")
+	b.WriteString("You are a senior technical recruiter. Score each candidate for the following search query.\n\n")
+	b.WriteString("Search query: " + query + "\n\n")
 
 	if len(communitySummaries) > 0 {
 		b.WriteString("Talent Pool Context (relevant community summaries):\n")
@@ -112,10 +112,10 @@ func (s *LLMScorer) buildScoringPrompt(query string, candidates []FusedCandidate
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("Scoring (0-100):\n")
-	b.WriteString("- Skill depth: years of experience and proficiency level in the required skill (most important)\n")
-	b.WriteString("- Skills breadth: does their overall tech stack align with the role?\n")
-	b.WriteString("- Title match: does their current or past role reflect the position? (secondary — deep skill experience outweighs a matching title alone)\n\n")
+	b.WriteString("Scoring rules (0-100):\n")
+	b.WriteString("- Role type match: if the query specifies a role (e.g. analyst, product owner, developer, architect), the candidate's PRIMARY role must match that type. A candidate with a mismatched primary role (e.g. a software architect for an 'analyst' query) must score NO HIGHER THAN 35, even if they have domain knowledge.\n")
+	b.WriteString("- Domain/skill match: does their skill set and work history align with the domain or skills mentioned in the query? (e.g. 'banking', 'trade finance', 'e-commerce')\n")
+	b.WriteString("- Seniority: does their seniority level match any level implied by the query?\n\n")
 	b.WriteString("Candidates:\n")
 
 	for i, c := range candidates {
