@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -328,7 +330,7 @@ func (s *Service) callOllama(prompt string) (string, error) {
 }
 
 func (s *Service) callGroq(prompt string) (string, error) {
-	log.Printf("[DEBUG] Calling Groq with model: %s", s.model)
+	const maxRetries = 3
 
 	reqBody := map[string]interface{}{
 		"model": s.model,
@@ -342,65 +344,102 @@ func (s *Service) callGroq(prompt string) (string, error) {
 				"content": prompt,
 			},
 		},
-		"temperature": 0.0, // Deterministic: no hallucination in CV parsing/reranking
+		"temperature": 0.0,
 		"response_format": map[string]string{
 			"type": "json_object",
 		},
 	}
 
 	jsonData, _ := json.Marshal(reqBody)
-
-	req, err := http.NewRequest("POST",
-		"https://api.groq.com/openai/v1/chat/completions",
-		bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+s.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	startTime := time.Now()
 	client := &http.Client{Timeout: s.timeout}
-	resp, err := client.Do(req)
-	elapsed := time.Since(startTime)
 
-	log.Printf("[DEBUG] Groq request took: %v", elapsed)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			log.Printf("[Groq] Retry attempt %d/%d", attempt, maxRetries)
+		}
 
-	if err != nil {
-		return "", fmt.Errorf("Groq API error: %w", err)
+		req, err := http.NewRequest("POST",
+			"https://api.groq.com/openai/v1/chat/completions",
+			bytes.NewBuffer(jsonData))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Authorization", "Bearer "+s.apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		startTime := time.Now()
+		resp, err := client.Do(req)
+		elapsed := time.Since(startTime)
+		log.Printf("[Groq] Request took: %v (attempt %d)", elapsed, attempt+1)
+
+		if err != nil {
+			if attempt == maxRetries {
+				return "", fmt.Errorf("Groq API error after %d attempts: %w", maxRetries+1, err)
+			}
+			waitDur := time.Duration(1<<attempt) * time.Second
+			log.Printf("[Groq] Network error, retrying in %v: %v", waitDur, err)
+			time.Sleep(waitDur)
+			continue
+		}
+
+		// Handle rate limiting with retry
+		if resp.StatusCode == http.StatusTooManyRequests {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			if attempt == maxRetries {
+				return "", fmt.Errorf("Groq rate limited (429) after %d attempts: %s", maxRetries+1, string(body))
+			}
+
+			// Respect Retry-After header if present, else exponential backoff
+			waitDur := time.Duration(1<<attempt) * time.Second
+			if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
+				if secs, parseErr := strconv.Atoi(retryAfter); parseErr == nil && secs > 0 {
+					waitDur = time.Duration(secs) * time.Second
+				}
+			}
+			log.Printf("[Groq] Rate limited (429), waiting %v before retry...", waitDur)
+			time.Sleep(waitDur)
+			continue
+		}
+
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			if attempt == maxRetries {
+				return "", fmt.Errorf("Groq API error %d: %s", resp.StatusCode, string(body))
+			}
+			waitDur := time.Duration(1<<attempt) * time.Second
+			log.Printf("[Groq] HTTP %d, retrying in %v", resp.StatusCode, waitDur)
+			time.Sleep(waitDur)
+			continue
+		}
+
+		var result struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", err
+		}
+		if result.Error.Message != "" {
+			return "", fmt.Errorf("Groq error: %s", result.Error.Message)
+		}
+		if len(result.Choices) == 0 {
+			return "", fmt.Errorf("no response from Groq")
+		}
+
+		log.Printf("[Groq] Response length: %d chars", len(result.Choices[0].Message.Content))
+		return result.Choices[0].Message.Content, nil
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Groq API error: %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	if err != nil {
-		return "", err
-	}
-
-	if result.Error.Message != "" {
-		return "", fmt.Errorf("Groq error: %s", result.Error.Message)
-	}
-
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no response from Groq")
-	}
-
-	log.Printf("[DEBUG] Groq response length: %d characters", len(result.Choices[0].Message.Content))
-
-	return result.Choices[0].Message.Content, nil
+	return "", fmt.Errorf("Groq: exhausted %d retries", maxRetries+1)
 }

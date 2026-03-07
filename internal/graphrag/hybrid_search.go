@@ -112,9 +112,9 @@ type HybridSearchConfig struct {
 
 func DefaultHybridConfig() HybridSearchConfig {
 	return HybridSearchConfig{
-		BM25Weight:         0.2, // Full-text search on candidates.search_vector (name + skills + experience)
-		VectorWeight:       0.5,
-		GraphWeight:        0.3,
+		BM25Weight:         0.0,
+		VectorWeight:       0.6,
+		GraphWeight:        0.4,
 		TopK:               100,
 		FinalTopN:          8, // Skill-based searches bypass this (see Step 2.55). Used only for skill-less queries as an LLM cost guard.
 		UseCommunityFilter: false,
@@ -142,11 +142,6 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	// Clear ALL prepared statements once before parallel retrieval to prevent cache collisions
 	h.db.Exec("DEALLOCATE ALL")
 
-	// Translate non-ASCII queries (e.g. Turkish) to English for BM25 keyword matching.
-	// Vector search and LLM scoring keep the original query — embeddings are multilingual
-	// and the LLM scorer understands Turkish context fine.
-	bm25Query := h.translateToEnglish(query)
-
 	// Step 1: Parallel retrieval from 3 sources
 	bm25ResultsChan := make(chan []BM25Result)
 	vectorResultsChan := make(chan []VectorSearchResult)
@@ -160,7 +155,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 
 	// BM25 search
 	go func() {
-		results, err := h.bm25Searcher.Search(ctx, bm25Query, config.TopK)
+		results, err := h.bm25Searcher.Search(ctx, query, config.TopK)
 		if err != nil {
 			errChan <- fmt.Errorf("bm25 failed: %w", err)
 			return
@@ -282,10 +277,31 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	// Step 2.7: Community-based filtering (if enabled) - Microsoft GraphRAG style
 	// Skipped when skillFilterActive=true: skill match already guarantees domain relevance.
 	// Used as the primary narrowing mechanism when no skills were extracted (e.g. "Senior Backend Developer").
+	//
+	// Community lookup priority:
+	//   1. Embedding similarity against graph_communities.embedding (populated by detect_communities tool)
+	//   2. Keyword mapping from LLM-extracted positions (PositionsToCommunities) — fallback
+	//   3. Keyword scan of raw query text (FindCommunitiesByQuery) — last resort
+	var queryCommunities []string
+	if queryEmbedding != nil {
+		dbCommunities, dbErr := h.embeddingService.FindCommunitiesByEmbedding(ctx, queryEmbedding, 2)
+		if dbErr != nil {
+			log.Printf("[HybridSearch] FindCommunitiesByEmbedding failed (non-fatal): %v", dbErr)
+		} else if len(dbCommunities) > 0 {
+			queryCommunities = dbCommunities
+			log.Printf("[HybridSearch] Communities from embedding similarity: %v", queryCommunities)
+		}
+	}
+	if len(queryCommunities) == 0 && searchCriteria != nil && len(searchCriteria.Positions) > 0 {
+		queryCommunities = PositionsToCommunities(searchCriteria.Positions)
+		log.Printf("[HybridSearch] Communities from LLM positions %v: %v", searchCriteria.Positions, queryCommunities)
+	}
+	if len(queryCommunities) == 0 {
+		queryCommunities = FindCommunitiesByQuery(query)
+		log.Printf("[HybridSearch] Communities from keyword fallback: %v", queryCommunities)
+	}
 	shouldUseCommunityFilter := !skillFilterActive && (config.UseCommunityFilter || len(fusedCandidates) >= config.CommunityThreshold)
 	if shouldUseCommunityFilter && len(fusedCandidates) > 0 {
-		// Infer relevant communities from query
-		queryCommunities := FindCommunitiesByQuery(query)
 		log.Printf("[HybridSearch] Community filter enabled. Query matches communities: %v", queryCommunities)
 
 		// Filter candidates by overlapping communities (Microsoft GraphRAG approach)
@@ -333,6 +349,27 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		case "failed":
 			fusedCandidates[i].FusionScore = max(0.0, fusedCandidates[i].FusionScore-0.10)
 		}
+	}
+
+	// Step 2.9: Deterministic community-score boost.
+	// Uses the same queryCommunities from Step 2.7 — no second keyword scan.
+	// Penalises candidates whose skills don't match the query's community.
+	// Formula: FusionScore *= (0.25 + 0.75 * bestMatchingCommunityScore)
+	// → perfect match (score=1.0): no change; zero match (score=0): 0.25x penalty.
+	if len(queryCommunities) > 0 {
+		log.Printf("[HybridSearch] Community score boost active for: %v", queryCommunities)
+		for i := range fusedCandidates {
+			bestScore := 0.0
+			for _, qc := range queryCommunities {
+				if s, ok := fusedCandidates[i].CommunityScores[qc]; ok && s > bestScore {
+					bestScore = s
+				}
+			}
+			fusedCandidates[i].FusionScore *= 0.25 + 0.75*bestScore
+		}
+		sort.Slice(fusedCandidates, func(i, j int) bool {
+			return fusedCandidates[i].FusionScore > fusedCandidates[j].FusionScore
+		})
 	}
 
 	// Step 3: Take top N for LLM reranking.
@@ -781,10 +818,13 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 		}
 	}
 
-	// BATCH 4: Load computed community from graph_communities (the real Leiden-computed communities)
+	// BATCH 4: Load community memberships from graph_communities (written by detect_communities tool).
+	// Reads membership_strength per candidate so Steps 2.7 and 2.9 get real cluster-based scores.
+	// If the table is empty (tool hasn't run yet) no rows are returned and the keyword fallback below fires.
+	dbCommunityLoaded := make(map[string]bool) // personID → true if at least one DB community loaded
 	if len(personIDs) > 0 {
 		communityMemberQuery := fmt.Sprintf(`
-			SELECT p.node_id, gc.community_id, gc.summary
+			SELECT p.node_id, gc.community_id, gc.summary, COALESCE(cm.membership_strength, 1.0)
 			FROM graph_nodes p
 			JOIN community_members cm ON p.id = cm.node_id
 			JOIN graph_communities gc ON cm.community_id = gc.id
@@ -802,27 +842,53 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 			for communityRows.Next() {
 				var personID, communityID string
 				var summary sql.NullString
-				if err := communityRows.Scan(&personID, &communityID, &summary); err != nil {
+				var strength float64
+				if err := communityRows.Scan(&personID, &communityID, &summary, &strength); err != nil {
 					continue
 				}
 				idx, ok := personIDToIndex[personID]
 				if !ok {
 					continue
 				}
-				// Only set if not already set (keep the highest node_count community due to ORDER BY)
+				// Primary community = first row (highest node_count due to ORDER BY).
 				if candidates[idx].ComputedCommunityID == "" {
 					candidates[idx].ComputedCommunityID = communityID
 					if summary.Valid {
 						candidates[idx].ComputedCommunitySummary = summary.String
 					}
 				}
+				// Populate CommunityScores and Communities from DB membership_strength.
+				if candidates[idx].CommunityScores == nil {
+					candidates[idx].CommunityScores = make(map[string]float64)
+				}
+				candidates[idx].CommunityScores[communityID] = strength
+				alreadyInList := false
+				for _, c := range candidates[idx].Communities {
+					if c == communityID {
+						alreadyInList = true
+						break
+					}
+				}
+				if !alreadyInList {
+					candidates[idx].Communities = append(candidates[idx].Communities, communityID)
+				}
+				dbCommunityLoaded[personID] = true
 			}
 		}
 	}
 
-	// Assign keyword-based communities from freshly-loaded skills (used for community filter).
-	// Always recompute from skills — stored `community` prop may be stale or missing Communities list.
+	// Keyword-based community assignment: fallback for candidates with no DB community data.
+	// Runs when graph_communities table is empty (detect_communities tool hasn't run yet)
+	// or for any candidate that wasn't covered by community_members.
 	for i := range candidates {
+		if dbCommunityLoaded[candidates[i].PersonID] {
+			// DB communities already loaded; set primary from ComputedCommunityID.
+			if candidates[i].Community == "" {
+				candidates[i].Community = candidates[i].ComputedCommunityID
+			}
+			continue
+		}
+		// Fallback: derive community from skills via keyword matching.
 		if len(candidates[i].Skills) > 0 {
 			primary, communities, scores := FindCommunities(candidates[i].Skills, 0.3)
 			candidates[i].Community = primary
@@ -872,31 +938,4 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 			}
 		}
 	}
-}
-// translateToEnglish translates a query to English if it contains non-ASCII characters
-// (e.g. Turkish). BM25 does exact token matching against English CVs, so without
-// translation Turkish queries always produce bm25_score=0. Returns original on error.
-func (h *HybridSearchEngine) translateToEnglish(query string) string {
-	if !containsNonASCII(query) {
-		return query
-	}
-	prompt := "Translate this search query to English for CV/resume search. Return only the translated query, nothing else.\n\nQuery: " + query
-	translated, err := h.llm.Generate(prompt)
-	if err != nil || strings.TrimSpace(translated) == "" {
-		log.Printf("[HybridSearch] Query translation failed, using original for BM25: %v", err)
-		return query
-	}
-	translated = strings.TrimSpace(translated)
-	log.Printf("[HybridSearch] BM25 query translated: %q → %q", query, translated)
-	return translated
-}
-
-// containsNonASCII reports whether s contains any non-ASCII rune (> 127).
-func containsNonASCII(s string) bool {
-	for _, r := range s {
-		if r > 127 {
-			return true
-		}
-	}
-	return false
 }

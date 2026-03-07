@@ -116,6 +116,79 @@ func FindCommunities(skills []SkillNode, threshold float64) (string, []string, m
 	return primary, communities, normalizedScores
 }
 
+// PositionsToCommunities maps LLM-extracted job positions to community IDs.
+// Input is already normalized by the LLM (e.g. "trade bilen analist" → ["analyst"]),
+// so this only needs a simple substring table — no keyword scanning of raw query text.
+func PositionsToCommunities(positions []string) []string {
+	// Each entry: if the position contains this substring → map to that community.
+	// Ordered from most specific to least specific to avoid false matches.
+	type mapping struct {
+		substr    string
+		community string
+	}
+	mappings := []mapping{
+		// analyst / product roles
+		{"business analyst", "analyst"},
+		{"data analyst", "analyst"},
+		{"system analyst", "analyst"},
+		{"product owner", "analyst"},
+		{"product manager", "analyst"},
+		{"product lead", "analyst"},
+		{"analyst", "analyst"},
+		{"analist", "analyst"},
+		// ml / ai — before "data engineer" to avoid wrong match
+		{"data scientist", "ml-ai"},
+		{"machine learning", "ml-ai"},
+		{"ml engineer", "ml-ai"},
+		{"ai engineer", "ml-ai"},
+		// data engineering
+		{"data engineer", "data"},
+		{"etl", "data"},
+		// devops / infra
+		{"devops", "devops"},
+		{"platform engineer", "devops"},
+		{"sre", "devops"},
+		{"infrastructure", "devops"},
+		// qa / test
+		{"qa", "qa-test"},
+		{"test engineer", "qa-test"},
+		{"quality assurance", "qa-test"},
+		{"tester", "qa-test"},
+		// mobile
+		{"ios", "mobile"},
+		{"android", "mobile"},
+		{"mobile", "mobile"},
+		{"flutter", "mobile"},
+		{"react native", "mobile"},
+		// frontend — before generic "developer" check
+		{"frontend", "frontend"},
+		{"front-end", "frontend"},
+		{"ui developer", "frontend"},
+		{"react developer", "frontend"},
+		{"angular developer", "frontend"},
+		// backend / generic developer
+		{"backend", "backend"},
+		{"back-end", "backend"},
+		{"developer", "backend"},
+		{"engineer", "backend"},
+		{"software", "backend"},
+	}
+
+	seen := map[string]bool{}
+	var result []string
+	for _, pos := range positions {
+		posLower := strings.ToLower(strings.TrimSpace(pos))
+		for _, m := range mappings {
+			if strings.Contains(posLower, m.substr) && !seen[m.community] {
+				result = append(result, m.community)
+				seen[m.community] = true
+				break
+			}
+		}
+	}
+	return result
+}
+
 // FindCommunitiesByQuery infers relevant communities from search query
 func FindCommunitiesByQuery(query string) []string {
 	queryLower := strings.ToLower(query)

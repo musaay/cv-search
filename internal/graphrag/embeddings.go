@@ -331,3 +331,54 @@ func (s *EmbeddingService) ReEmbedPersonNodeByID(ctx context.Context, graphNodeI
 	log.Printf("[Embeddings] Re-embedded person node %d (%d interview notes merged)", graphNodeID, len(interviewNotes))
 	return nil
 }
+
+// FindCommunitiesByEmbedding returns the community_id strings of the topK graph_communities
+// whose embeddings are most similar to the given query embedding (cosine similarity).
+//
+// Only considers communities that contain at least one person node — this avoids returning
+// skill-only communities (e.g. legacy entries) which would never match any candidate's
+// CommunityScores and would incorrectly trigger the 0.25x penalty for everyone.
+//
+// Returns an empty slice (not an error) when graph_communities is empty or has no embeddings —
+// callers must fall back to keyword-based detection in that case.
+// communityDistanceThreshold is the maximum cosine distance (0–2) allowed when
+// matching a query embedding to a cluster community. Communities beyond this
+// distance are dropped so that "least-bad" clusters never act as filters.
+// OpenAI text-embedding-3-small: same-domain ≈ 0.1–0.3, cross-domain ≈ 0.4–0.6.
+const communityDistanceThreshold = 0.45
+
+func (s *EmbeddingService) FindCommunitiesByEmbedding(ctx context.Context, queryEmbedding []float32, topK int) ([]string, error) {
+	embeddingJSON, _ := json.Marshal(queryEmbedding)
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT gc.community_id, gc.embedding <=> $1::vector AS dist
+		FROM graph_communities gc
+		WHERE gc.embedding IS NOT NULL
+		  AND gc.community_id LIKE 'cluster_%'
+		  AND EXISTS (
+		    SELECT 1 FROM community_members cm
+		    JOIN graph_nodes gn ON gn.id = cm.node_id
+		    WHERE cm.community_id = gc.id AND gn.node_type = 'person'
+		  )
+		ORDER BY dist
+		LIMIT $2
+	`, string(embeddingJSON), topK)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		var dist float64
+		if err := rows.Scan(&id, &dist); err != nil {
+			continue
+		}
+		log.Printf("[CommunityEmbed] %s dist=%.4f (threshold=%.2f)", id, dist, communityDistanceThreshold)
+		if dist <= communityDistanceThreshold {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
+}
