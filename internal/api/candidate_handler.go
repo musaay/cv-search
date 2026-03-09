@@ -28,7 +28,7 @@ type interviewRequest struct {
 	InterviewerName string `json:"interviewer_name"`
 	InterviewType   string `json:"interview_type"` // technical, hr, case_study, other
 	Notes           string `json:"notes"`
-	Outcome         string `json:"outcome"` // passed, failed, pending
+	Outcome         string `json:"outcome"` // pre_interview, interview, decision_pending, hired, rejected_*, withdrawn, pending, reserved_*
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -51,7 +51,22 @@ func parseInterviewID(r *http.Request) (int, error) {
 
 func (req *interviewRequest) toInterview() (storage.Interview, error) {
 	validTypes := map[string]bool{"technical": true, "hr": true, "case_study": true, "other": true, "": true}
-	validOutcomes := map[string]bool{"passed": true, "failed": true, "pending": true, "": true}
+	validOutcomes := map[string]bool{
+		"pre_interview":                true,
+		"interview":                    true,
+		"decision_pending":             true,
+		"hired":                        true,
+		"rejected_pre_interview":       true,
+		"rejected_interview":           true,
+		"withdrawn":                    true,
+		"pending":                      true,
+		"rejected_other_team_possible": true,
+		"reserved":                     true,
+		"different_account":            true,
+		"contact_for_slot":             true,
+		"reserved_future_hire":         true,
+		"":                             true,
+	}
 
 	if req.InterviewDate == "" {
 		return storage.Interview{}, errors.New("interview_date is required")
@@ -64,7 +79,7 @@ func (req *interviewRequest) toInterview() (storage.Interview, error) {
 		return storage.Interview{}, errors.New("interview_type must be one of: technical, hr, case_study, other")
 	}
 	if !validOutcomes[req.Outcome] {
-		return storage.Interview{}, errors.New("outcome must be one of: passed, failed, pending")
+		return storage.Interview{}, errors.New("outcome must be one of: pre_interview, interview, decision_pending, hired, rejected_pre_interview, rejected_interview, withdrawn, pending, rejected_other_team_possible, reserved, different_account, contact_for_slot, reserved_future_hire")
 	}
 
 	return storage.Interview{

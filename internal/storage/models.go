@@ -25,7 +25,7 @@ type Interview struct {
 	InterviewerName string    `json:"interviewer_name,omitempty"`
 	InterviewType   string    `json:"interview_type,omitempty"` // technical, hr, case_study, other
 	Notes           string    `json:"notes,omitempty"`
-	Outcome         string    `json:"outcome,omitempty"` // passed, failed, pending
+	Outcome         string    `json:"outcome,omitempty"` // pre_interview, interview, decision_pending, hired, rejected_*, withdrawn, pending, reserved_*
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
