@@ -33,9 +33,9 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	startTime := time.Now()
 
-	// Parse multipart form (max 1MB)
-	if err := r.ParseMultipartForm(1 << 20); err != nil {
-		http.Error(w, "file too large or invalid (max 1MB)", http.StatusBadRequest)
+	// Parse multipart form (max 5MB)
+	if err := r.ParseMultipartForm(5 << 20); err != nil {
+		http.Error(w, "file too large or invalid (max 5MB)", http.StatusBadRequest)
 		return
 	}
 
@@ -46,9 +46,9 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Enforce 1 MB per-file limit
-	if header.Size > 1<<20 {
-		http.Error(w, "file too large (max 1 MB)", http.StatusBadRequest)
+	// Enforce 5 MB per-file limit
+	if header.Size > 5<<20 {
+		http.Error(w, "file too large (max 5 MB)", http.StatusBadRequest)
 		return
 	}
 
@@ -368,9 +368,9 @@ func (a *API) GetJobStatusHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// BulkCVUploadHandler handles bulk CV file uploads (up to 10 files, 1 MB each).
+// BulkCVUploadHandler handles bulk CV file uploads (up to 20 files, 5 MB each).
 // @Summary Bulk upload CVs
-// @Description Upload multiple CV files at once (max 10 files, 1 MB each, 10 MB total)
+// @Description Upload multiple CV files at once (max 20 files, 5 MB each, 100 MB total)
 // @Tags cv
 // @Accept multipart/form-data
 // @Produce json
@@ -384,8 +384,8 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		http.Error(w, "request too large (max 10 MB total)", http.StatusBadRequest)
+	if err := r.ParseMultipartForm(100 << 20); err != nil {
+		http.Error(w, "request too large (max 100 MB total)", http.StatusBadRequest)
 		return
 	}
 
@@ -394,8 +394,8 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no files uploaded (use field name: files)", http.StatusBadRequest)
 		return
 	}
-	if len(files) > 10 {
-		http.Error(w, "max 10 files per request", http.StatusBadRequest)
+	if len(files) > 20 {
+		http.Error(w, "max 20 files per request", http.StatusBadRequest)
 		return
 	}
 
@@ -415,8 +415,8 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 	for _, fileHeader := range files {
 		res := FileResult{Filename: fileHeader.Filename}
 
-		// Per-file size limit: 1 MB
-		if fileHeader.Size > 1<<20 {
+		// Per-file size limit: 5 MB
+		if fileHeader.Size > 5<<20 {
 			res.Status = "too_large"
 			skipped++
 			results = append(results, res)
