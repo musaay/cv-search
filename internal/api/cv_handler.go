@@ -33,9 +33,11 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	startTime := time.Now()
 
-	// Parse multipart form (max 5MB)
-	if err := r.ParseMultipartForm(5 << 20); err != nil {
-		http.Error(w, "file too large or invalid (max 5MB)", http.StatusBadRequest)
+	maxFileSize := int64(a.cfg.MaxFileSizeMB) << 20
+
+	// Parse multipart form
+	if err := r.ParseMultipartForm(maxFileSize); err != nil {
+		http.Error(w, fmt.Sprintf("file too large or invalid (max %dMB)", a.cfg.MaxFileSizeMB), http.StatusBadRequest)
 		return
 	}
 
@@ -46,9 +48,9 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Enforce 5 MB per-file limit
-	if header.Size > 5<<20 {
-		http.Error(w, "file too large (max 5 MB)", http.StatusBadRequest)
+	// Enforce per-file limit
+	if header.Size > maxFileSize {
+		http.Error(w, fmt.Sprintf("file too large (max %d MB)", a.cfg.MaxFileSizeMB), http.StatusBadRequest)
 		return
 	}
 
@@ -384,8 +386,9 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := r.ParseMultipartForm(100 << 20); err != nil {
-		http.Error(w, "request too large (max 100 MB total)", http.StatusBadRequest)
+	maxBulkSize := int64(a.cfg.MaxBulkFileSizeMB) << 20
+	if err := r.ParseMultipartForm(maxBulkSize); err != nil {
+		http.Error(w, fmt.Sprintf("request too large (max %d MB total)", a.cfg.MaxBulkFileSizeMB), http.StatusBadRequest)
 		return
 	}
 
@@ -412,11 +415,12 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 	var batchJobs []BatchJob
 	queued, skipped := 0, 0
 
+	maxFileSize := int64(a.cfg.MaxFileSizeMB) << 20
 	for _, fileHeader := range files {
 		res := FileResult{Filename: fileHeader.Filename}
 
-		// Per-file size limit: 5 MB
-		if fileHeader.Size > 5<<20 {
+		// Per-file size limit
+		if fileHeader.Size > maxFileSize {
 			res.Status = "too_large"
 			skipped++
 			results = append(results, res)
