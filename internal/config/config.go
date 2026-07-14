@@ -27,8 +27,8 @@ type Config struct {
 	DisableLLMCache bool
 
 	// File Upload Constraints
-	MaxFileSizeMB     int
-	MaxBulkFileSizeMB int
+	MaxFileSizeMB    int
+	MaxBulkFileCount int
 }
 
 func LoadConfig() *Config {
@@ -68,22 +68,22 @@ func LoadConfig() *Config {
 		}
 	}
 
-	maxBulkFileSizeMB := 100 // default 100 MB
-	if val := os.Getenv("MAX_BULK_FILE_SIZE_MB"); val != "" {
+	maxBulkFileCount := 20 // default 20 files
+	if val := os.Getenv("MAX_BULK_FILE_COUNT"); val != "" {
 		if i, err := strconv.Atoi(val); err == nil && i > 0 {
-			maxBulkFileSizeMB = i
+			maxBulkFileCount = i
 		}
 	}
 
 	return &Config{
-		DatabaseURL:       os.Getenv("DATABASE_URL"),
-		LLMProvider:       llmProvider,
-		LLMModel:          llmModel,
-		LLMAPIKey:         llmAPIKey,
-		OpenAIAPIKey:      os.Getenv("OPENAI_API_KEY"),
-		UploadsDir:        os.Getenv("UPLOADS_DIR"),
-		DisableLLMCache:   os.Getenv("LLM_CACHE_DISABLED") == "true",
-		MaxFileSizeMB:     maxFileSizeMB,
-		MaxBulkFileSizeMB: maxBulkFileSizeMB,
+		DatabaseURL:     os.Getenv("DATABASE_URL"),
+		LLMProvider:     llmProvider,
+		LLMModel:        llmModel,
+		LLMAPIKey:       llmAPIKey,
+		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
+		UploadsDir:      os.Getenv("UPLOADS_DIR"),
+		DisableLLMCache: os.Getenv("LLM_CACHE_DISABLED") == "true",
+		MaxFileSizeMB:   maxFileSizeMB,
+		MaxBulkFileCount: maxBulkFileCount,
 	}
 }

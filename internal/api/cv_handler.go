@@ -386,9 +386,9 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	maxBulkSize := int64(a.cfg.MaxBulkFileSizeMB) << 20
+	maxBulkSize := int64(a.cfg.MaxFileSizeMB*a.cfg.MaxBulkFileCount) << 20
 	if err := r.ParseMultipartForm(maxBulkSize); err != nil {
-		http.Error(w, fmt.Sprintf("request too large (max %d MB total)", a.cfg.MaxBulkFileSizeMB), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("request too large (max %d MB total)", a.cfg.MaxFileSizeMB*a.cfg.MaxBulkFileCount), http.StatusBadRequest)
 		return
 	}
 
@@ -397,8 +397,8 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no files uploaded (use field name: files)", http.StatusBadRequest)
 		return
 	}
-	if len(files) > 20 {
-		http.Error(w, "max 20 files per request", http.StatusBadRequest)
+	if len(files) > a.cfg.MaxBulkFileCount {
+		http.Error(w, fmt.Sprintf("max %d files per request", a.cfg.MaxBulkFileCount), http.StatusBadRequest)
 		return
 	}
 
