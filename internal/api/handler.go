@@ -71,6 +71,7 @@ func (bs *BatchStore) cleanup() {
 
 type API struct {
 	db                   *storage.DB
+	cfg                  *config.Config
 	cvParser             *cv.CVParser
 	llmService           *llm.Service
 	graphBuilder         *graphrag.GraphBuilder
@@ -130,6 +131,7 @@ func NewAPI(db *storage.DB, cfg *config.Config) *API {
 
 	api := &API{
 		db:                   db,
+		cfg:                  cfg,
 		cvParser:             cvParser,
 		llmService:           llmSvc,
 		graphBuilder:         graphBuilder,

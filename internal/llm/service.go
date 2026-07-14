@@ -398,6 +398,9 @@ func (s *Service) callGroq(prompt string) (string, error) {
 					waitDur = time.Duration(secs) * time.Second
 				}
 			}
+			if waitDur > 3*time.Second {
+				return "", fmt.Errorf("Groq rate limited (429) and requested a retry wait duration of %v which is too long for interactive query", waitDur)
+			}
 			log.Printf("[Groq] Rate limited (429), waiting %v before retry...", waitDur)
 			time.Sleep(waitDur)
 			continue

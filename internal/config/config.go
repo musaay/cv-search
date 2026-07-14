@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -24,6 +25,10 @@ type Config struct {
 	// Set to true in local/dev to bypass LLM cache and always hit the LLM.
 	// In prod leave it unset (defaults to false) so cache is active.
 	DisableLLMCache bool
+
+	// File Upload Constraints
+	MaxFileSizeMB    int
+	MaxBulkFileCount int
 }
 
 func LoadConfig() *Config {
@@ -56,6 +61,20 @@ func LoadConfig() *Config {
 		llmAPIKey = os.Getenv("GROQ_API_KEY")
 	}
 
+	maxFileSizeMB := 5 // default 5 MB
+	if val := os.Getenv("MAX_FILE_SIZE_MB"); val != "" {
+		if i, err := strconv.Atoi(val); err == nil && i > 0 {
+			maxFileSizeMB = i
+		}
+	}
+
+	maxBulkFileCount := 20 // default 20 files
+	if val := os.Getenv("MAX_BULK_FILE_COUNT"); val != "" {
+		if i, err := strconv.Atoi(val); err == nil && i > 0 {
+			maxBulkFileCount = i
+		}
+	}
+
 	return &Config{
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		LLMProvider:     llmProvider,
@@ -64,5 +83,7 @@ func LoadConfig() *Config {
 		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
 		UploadsDir:      os.Getenv("UPLOADS_DIR"),
 		DisableLLMCache: os.Getenv("LLM_CACHE_DISABLED") == "true",
+		MaxFileSizeMB:   maxFileSizeMB,
+		MaxBulkFileCount: maxBulkFileCount,
 	}
 }
