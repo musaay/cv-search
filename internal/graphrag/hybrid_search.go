@@ -708,6 +708,39 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 		}
 	}
 
+	// BATCH 1.5: Load candidate IDs for each GraphNodeIntID
+	var graphNodeIDs []interface{}
+	for _, c := range candidates {
+		if c.GraphNodeIntID != 0 {
+			graphNodeIDs = append(graphNodeIDs, c.GraphNodeIntID)
+		}
+	}
+	if len(graphNodeIDs) > 0 {
+		placeholders2 := make([]string, len(graphNodeIDs))
+		for i := range graphNodeIDs {
+			placeholders2[i] = fmt.Sprintf("$%d", i+1)
+		}
+		candidateQuery := fmt.Sprintf(`
+			SELECT id, graph_node_id
+			FROM candidates
+			WHERE graph_node_id IN (%s)
+		`, strings.Join(placeholders2, ","))
+		candRows, err := h.db.QueryContext(ctx, candidateQuery, graphNodeIDs...)
+		if err == nil {
+			defer candRows.Close()
+			for candRows.Next() {
+				var cID, gID int
+				if err := candRows.Scan(&cID, &gID); err == nil {
+					if idx, ok := nodeIntIDIndex[gID]; ok {
+						candidates[idx].CandidateID = cID
+					}
+				}
+			}
+		} else {
+			log.Printf("[HybridSearch] Failed to batch load candidates: %v", err)
+		}
+	}
+
 	// BATCH 2: Load all skills in one query
 	skillQuery := fmt.Sprintf(`
 		SELECT p.node_id, s.properties, e.properties

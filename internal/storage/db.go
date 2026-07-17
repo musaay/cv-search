@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -398,6 +399,38 @@ func (db *DB) GetCandidateDetail(ctx context.Context, candidateID int) (*Candida
 	if graphNodeID.Valid {
 		id := int(graphNodeID.Int64)
 		c.GraphNodeID = &id
+	}
+
+	// Try to fill empty email, phone, location from parsed CV text & entities if they are empty
+	if c.Email == "" || c.Phone == "" || c.Location == "" {
+		var cvFileID int
+		var parsedText string
+		err := db.connection.QueryRowContext(ctx, `
+			SELECT id, parsed_text FROM cv_files WHERE candidate_id = $1 LIMIT 1
+		`, candidateID).Scan(&cvFileID, &parsedText)
+		if err == nil {
+			if c.Email == "" {
+				emailMatch := regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`).FindString(parsedText)
+				if emailMatch != "" {
+					c.Email = emailMatch
+				}
+			}
+			if c.Phone == "" {
+				phoneMatch := regexp.MustCompile(`(?:(?:\+?90|0)\s*)?5\d{2}[-\s]?\d{3}[-\s]?\d{4}`).FindString(parsedText)
+				if phoneMatch != "" {
+					c.Phone = phoneMatch
+				}
+			}
+			if c.Location == "" {
+				var locVal string
+				errLoc := db.connection.QueryRowContext(ctx, `
+					SELECT entity_value FROM cv_entities WHERE cv_file_id = $1 AND entity_type = 'location' LIMIT 1
+				`, cvFileID).Scan(&locVal)
+				if errLoc == nil && locVal != "" {
+					c.Location = locVal
+				}
+			}
+		}
 	}
 
 	// Load interviews

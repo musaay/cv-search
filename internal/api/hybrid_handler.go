@@ -42,6 +42,7 @@ type InterviewSummaryResponse struct {
 
 // FusedCandidateResponse represents a candidate with all scores
 type FusedCandidateResponse struct {
+	ID                       int                        `json:"id"`
 	PersonID                 string                     `json:"person_id"`
 	Name                     string                     `json:"name"`
 	CurrentPosition          string                     `json:"current_position,omitempty"`
@@ -154,6 +155,7 @@ func (a *API) HybridSearchHandler(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		candidates = append(candidates, FusedCandidateResponse{
+			ID:                       c.CandidateID,
 			PersonID:                 c.PersonID,
 			Name:                     c.Name,
 			CurrentPosition:          c.CurrentPosition,
