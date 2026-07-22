@@ -273,6 +273,37 @@ BEGIN
 END $$;
 
 -- =====================================================
+-- 7b. GROQ BATCH API TRACKING (Bulk CV Extraction)
+-- =====================================================
+-- Large bulk uploads (and offline reprocessing tools) submit CV extraction
+-- requests as a single Groq Batch API job instead of one-by-one synchronous
+-- calls, avoiding the standard per-model rate limit entirely (Batch API uses
+-- a separate quota) and cutting cost 50%. Results arrive within 24h-7d
+-- (usually much faster) and are applied by a background poller.
+
+ALTER TABLE cv_upload_jobs ADD COLUMN IF NOT EXISTS groq_batch_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_cv_upload_jobs_groq_batch_id ON cv_upload_jobs(groq_batch_id);
+COMMENT ON COLUMN cv_upload_jobs.groq_batch_id IS 'Set when this job was submitted as part of a Groq Batch API job instead of the real-time queue; status becomes batch_submitted until the poller applies results';
+
+CREATE TABLE IF NOT EXISTS llm_batch_jobs (
+    id SERIAL PRIMARY KEY,
+    groq_batch_id TEXT NOT NULL UNIQUE,
+    input_file_id TEXT,
+    output_file_id TEXT,
+    error_file_id TEXT,
+    status TEXT NOT NULL DEFAULT 'submitted',
+    -- Status mirrors Groq's batch status: submitted (local only), validating,
+    -- in_progress, finalizing, completed, failed, expired, cancelled
+    request_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    completed_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_batch_jobs_status ON llm_batch_jobs(status);
+
+COMMENT ON TABLE llm_batch_jobs IS 'Tracks Groq Batch API submissions used for large bulk CV extraction / backlog reprocessing';
+
+-- =====================================================
 -- 8. INTERVIEWS (Per-Candidate Interview Records)
 -- =====================================================
 

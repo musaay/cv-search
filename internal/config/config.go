@@ -29,6 +29,10 @@ type Config struct {
 	// File Upload Constraints
 	MaxFileSizeMB    int
 	MaxBulkFileCount int
+
+	// Above this many files in a single bulk upload, CV extraction is routed
+	// through the Groq Batch API instead of the real-time queue.
+	MaxRealtimeCVCount int
 }
 
 func LoadConfig() *Config {
@@ -68,10 +72,20 @@ func LoadConfig() *Config {
 		}
 	}
 
-	maxBulkFileCount := 20 // default 20 files
+	maxBulkFileCount := 100 // default 100 files; large batches route through Groq Batch API (see MaxRealtimeCVCount)
 	if val := os.Getenv("MAX_BULK_FILE_COUNT"); val != "" {
 		if i, err := strconv.Atoi(val); err == nil && i > 0 {
 			maxBulkFileCount = i
+		}
+	}
+
+	// Above this many files in one bulk upload, extraction is submitted as a
+	// single Groq Batch API job instead of the real-time queue (results take
+	// minutes-to-hours instead of seconds, but never hit the standard rate limit).
+	maxRealtimeCVCount := 20
+	if val := os.Getenv("MAX_REALTIME_CV_COUNT"); val != "" {
+		if i, err := strconv.Atoi(val); err == nil && i > 0 {
+			maxRealtimeCVCount = i
 		}
 	}
 
@@ -83,7 +97,8 @@ func LoadConfig() *Config {
 		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
 		UploadsDir:      os.Getenv("UPLOADS_DIR"),
 		DisableLLMCache: os.Getenv("LLM_CACHE_DISABLED") == "true",
-		MaxFileSizeMB:   maxFileSizeMB,
-		MaxBulkFileCount: maxBulkFileCount,
+		MaxFileSizeMB:      maxFileSizeMB,
+		MaxBulkFileCount:   maxBulkFileCount,
+		MaxRealtimeCVCount: maxRealtimeCVCount,
 	}
 }

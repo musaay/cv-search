@@ -94,6 +94,19 @@ type API struct {
 	popularQueriesExp   time.Time
 }
 
+// cvQueueBufferSize sizes the real-time CV processing queue so a full bulk
+// upload (maxBulkFileCount files) can be enqueued without hitting "queue full"
+// drops — with headroom on top for retried jobs — even when the Groq Batch
+// API is unavailable and everything falls back to this queue. Floors at 50
+// (the original fixed size) so small configs still get a reasonable buffer.
+func cvQueueBufferSize(maxBulkFileCount int) int {
+	size := maxBulkFileCount * 2
+	if size < 50 {
+		size = 50
+	}
+	return size
+}
+
 func NewAPI(db *storage.DB, cfg *config.Config) *API {
 	// Initialize CV parser
 	uploadsDir := cfg.UploadsDir
@@ -138,9 +151,13 @@ func NewAPI(db *storage.DB, cfg *config.Config) *API {
 		llmSearchEngine:      llmSearchEngine,
 		enhancedSearchEngine: enhancedSearchEngine,
 		hybridSearchEngine:   hybridSearchEngine,
-		cvProcessingQueue:    make(chan CVProcessingJob, 50), // Buffer for 50 CV processing jobs
-		embeddingQueue:       make(chan EmbeddingJob, 100),   // Buffer for 100 embedding jobs
-		batchStore:           newBatchStore(30 * time.Minute),
+		// Sized to comfortably hold a full bulk upload (MaxBulkFileCount) plus
+		// headroom for retried jobs piling up on top of fresh uploads — avoids
+		// "queue full" drops when the Groq Batch API isn't available and large
+		// bulk uploads fall back to the real-time queue.
+		cvProcessingQueue: make(chan CVProcessingJob, cvQueueBufferSize(cfg.MaxBulkFileCount)),
+		embeddingQueue:    make(chan EmbeddingJob, 100), // Buffer for 100 embedding jobs
+		batchStore:        newBatchStore(30 * time.Minute),
 	}
 
 	// Start background workers

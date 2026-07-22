@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq" // PostgreSQL driver
+	"github.com/lib/pq"
 )
 
 type DB struct {
@@ -709,6 +709,146 @@ func (db *DB) UpdateJobStatus(ctx context.Context, jobID int64, status string, e
 
 	_, err := db.connection.ExecContext(ctx, query, args...)
 	return err
+}
+
+// IncrementJobRetryCount increments retry_count for a job and returns the new
+// retry_count and the configured max_retries, so the caller can decide whether
+// to requeue the job or mark it permanently failed.
+func (db *DB) IncrementJobRetryCount(ctx context.Context, jobID int64) (retryCount int, maxRetries int, err error) {
+	err = db.connection.QueryRowContext(ctx, `
+		UPDATE cv_upload_jobs
+		SET retry_count = retry_count + 1
+		WHERE id = $1
+		RETURNING retry_count, max_retries
+	`, jobID).Scan(&retryCount, &maxRetries)
+	return retryCount, maxRetries, err
+}
+
+// CreateGroqBatchJob records a newly submitted Groq Batch API job.
+func (db *DB) CreateGroqBatchJob(ctx context.Context, groqBatchID, inputFileID string, requestCount int) (int64, error) {
+	var id int64
+	err := db.connection.QueryRowContext(ctx, `
+		INSERT INTO llm_batch_jobs (groq_batch_id, input_file_id, status, request_count, created_at)
+		VALUES ($1, $2, 'submitted', $3, NOW())
+		RETURNING id
+	`, groqBatchID, inputFileID, requestCount).Scan(&id)
+	return id, err
+}
+
+// LinkJobsToGroqBatch marks the given cv_upload_jobs as part of a Groq batch,
+// setting status to 'batch_submitted' so real-time polling clients see it's
+// no longer sitting in the immediate queue.
+func (db *DB) LinkJobsToGroqBatch(ctx context.Context, groqBatchID string, jobIDs []int64) error {
+	if len(jobIDs) == 0 {
+		return nil
+	}
+	_, err := db.connection.ExecContext(ctx, `
+		UPDATE cv_upload_jobs
+		SET status = 'batch_submitted', groq_batch_id = $1
+		WHERE id = ANY($2)
+	`, groqBatchID, pq.Array(jobIDs))
+	return err
+}
+
+// GroqBatchJobRow is a row from llm_batch_jobs.
+type GroqBatchJobRow struct {
+	ID           int64
+	GroqBatchID  string
+	InputFileID  string
+	OutputFileID *string
+	ErrorFileID  *string
+	Status       string
+}
+
+// ListOpenGroqBatchJobs returns all batch jobs that haven't reached a terminal
+// state yet (for the background poller to check on).
+func (db *DB) ListOpenGroqBatchJobs(ctx context.Context) ([]GroqBatchJobRow, error) {
+	rows, err := db.connection.QueryContext(ctx, `
+		SELECT id, groq_batch_id, input_file_id, output_file_id, error_file_id, status
+		FROM llm_batch_jobs
+		WHERE status NOT IN ('completed', 'failed', 'expired', 'cancelled')
+		ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []GroqBatchJobRow
+	for rows.Next() {
+		var r GroqBatchJobRow
+		if err := rows.Scan(&r.ID, &r.GroqBatchID, &r.InputFileID, &r.OutputFileID, &r.ErrorFileID, &r.Status); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// UpdateGroqBatchJobStatus updates the tracked status/output files for a batch.
+func (db *DB) UpdateGroqBatchJobStatus(ctx context.Context, groqBatchID, status string, outputFileID, errorFileID *string) error {
+	if status == "completed" || status == "failed" || status == "expired" || status == "cancelled" {
+		_, err := db.connection.ExecContext(ctx, `
+			UPDATE llm_batch_jobs
+			SET status = $1, output_file_id = $2, error_file_id = $3, completed_at = NOW()
+			WHERE groq_batch_id = $4
+		`, status, outputFileID, errorFileID, groqBatchID)
+		return err
+	}
+	_, err := db.connection.ExecContext(ctx, `
+		UPDATE llm_batch_jobs
+		SET status = $1, output_file_id = $2, error_file_id = $3
+		WHERE groq_batch_id = $4
+	`, status, outputFileID, errorFileID, groqBatchID)
+	return err
+}
+
+// GetJobsByGroqBatchID returns the cv_upload_jobs linked to a given batch,
+// keyed by cv_file_id (used as the batch's custom_id) so results can be
+// matched back to jobs.
+func (db *DB) GetJobsByGroqBatchID(ctx context.Context, groqBatchID string) (map[int64]int64, error) {
+	rows, err := db.connection.QueryContext(ctx, `
+		SELECT id, cv_file_id FROM cv_upload_jobs WHERE groq_batch_id = $1
+	`, groqBatchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[int64]int64) // cv_file_id -> job_id
+	for rows.Next() {
+		var jobID, cvFileID int64
+		if err := rows.Scan(&jobID, &cvFileID); err != nil {
+			return nil, err
+		}
+		result[cvFileID] = jobID
+	}
+	return result, rows.Err()
+}
+
+// GetCVTextsByFileIDs fetches parsed_text for a set of cv_files, keyed by id.
+func (db *DB) GetCVTextsByFileIDs(ctx context.Context, cvFileIDs []int64) (map[int64]string, error) {
+	if len(cvFileIDs) == 0 {
+		return map[int64]string{}, nil
+	}
+	rows, err := db.connection.QueryContext(ctx, `
+		SELECT id, parsed_text FROM cv_files WHERE id = ANY($1)
+	`, pq.Array(cvFileIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[int64]string)
+	for rows.Next() {
+		var id int64
+		var text sql.NullString
+		if err := rows.Scan(&id, &text); err != nil {
+			return nil, err
+		}
+		result[id] = text.String
+	}
+	return result, rows.Err()
 }
 
 // GetJobByID retrieves a job by ID

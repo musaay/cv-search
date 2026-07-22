@@ -2,13 +2,26 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
+
+	"golang.org/x/time/rate"
+)
+
+// Groq call sites have different latency tolerances: an interactive search
+// request must fail fast so the user's HTTP request doesn't hang, while an
+// async background job (CV extraction, batch tools) can safely wait much
+// longer for a rate-limited request to become available.
+const (
+	interactiveMaxWait = 3 * time.Second
+	backgroundMaxWait  = 60 * time.Second
 )
 
 type Provider string
@@ -25,6 +38,11 @@ type Service struct {
 	apiKey   string
 	model    string
 	timeout  time.Duration
+
+	// limiter proactively paces outgoing Groq requests so we stay under the
+	// model's published RPM instead of bursting and reacting to 429s after
+	// the fact. nil for non-Groq providers.
+	limiter *rate.Limiter
 }
 
 type CVExtraction struct {
@@ -69,12 +87,27 @@ type Education struct {
 }
 
 func NewService(provider, apiKey, model string) *Service {
-	return &Service{
+	s := &Service{
 		provider: Provider(provider),
 		apiKey:   apiKey,
 		model:    model,
 		timeout:  600 * time.Second, // 10 minutes for large CVs and slower models
 	}
+
+	if s.provider == ProviderGroq {
+		// Conservative default: Groq's published limit for llama-3.3-70b-versatile
+		// is 30 RPM, shared org-wide across search + CV parsing + offline tools.
+		// Stay a bit under it so we don't need to rely on reactive 429 handling.
+		rpm := 25
+		if v := os.Getenv("GROQ_RPM_LIMIT"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				rpm = n
+			}
+		}
+		s.limiter = rate.NewLimiter(rate.Limit(float64(rpm)/60.0), 1)
+	}
+
+	return s
 }
 
 // Generate sends a prompt to LLM and returns the response (for GraphRAG queries)
@@ -92,7 +125,9 @@ func (s *Service) Generate(prompt string) (string, error) {
 	case ProviderOllama:
 		response, err = s.callOllama(prompt)
 	case ProviderGroq:
-		response, err = s.callGroq(prompt)
+		// Interactive (search) call site: fail fast on rate limit rather than
+		// hanging the user's HTTP request.
+		response, err = s.callGroq(prompt, interactiveMaxWait)
 	default:
 		return "", fmt.Errorf("unknown provider: %s", s.provider)
 	}
@@ -116,7 +151,9 @@ func (s *Service) ExtractEntities(cvText string) (*CVExtraction, error) {
 	case ProviderOllama:
 		response, err = s.callOllama(prompt)
 	case ProviderGroq:
-		response, err = s.callGroq(prompt)
+		// Background call site (async worker/offline tools): safe to wait
+		// longer for a rate-limited request instead of aborting.
+		response, err = s.callGroq(prompt, backgroundMaxWait)
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", s.provider)
 	}
@@ -329,7 +366,11 @@ func (s *Service) callOllama(prompt string) (string, error) {
 	return result.Response, nil
 }
 
-func (s *Service) callGroq(prompt string) (string, error) {
+// callGroq sends a chat completion request to Groq. maxWait caps how long
+// we're willing to wait on a 429 (Retry-After) before giving up — interactive
+// callers pass a short cap (fail fast), background callers pass a longer one
+// (safe to wait since they run off a queue, not an HTTP request).
+func (s *Service) callGroq(prompt string, maxWait time.Duration) (string, error) {
 	const maxRetries = 3
 
 	reqBody := map[string]interface{}{
@@ -353,9 +394,20 @@ func (s *Service) callGroq(prompt string) (string, error) {
 	jsonData, _ := json.Marshal(reqBody)
 	client := &http.Client{Timeout: s.timeout}
 
+	limiterCtx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	defer cancel()
+
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			log.Printf("[Groq] Retry attempt %d/%d", attempt, maxRetries)
+		}
+
+		// Proactively pace requests to stay under Groq's RPM instead of
+		// bursting and reacting to 429s after the fact.
+		if s.limiter != nil {
+			if werr := s.limiter.Wait(limiterCtx); werr != nil {
+				return "", fmt.Errorf("Groq rate limiter wait failed: %w", werr)
+			}
 		}
 
 		req, err := http.NewRequest("POST",
@@ -398,8 +450,8 @@ func (s *Service) callGroq(prompt string) (string, error) {
 					waitDur = time.Duration(secs) * time.Second
 				}
 			}
-			if waitDur > 3*time.Second {
-				return "", fmt.Errorf("Groq rate limited (429) and requested a retry wait duration of %v which is too long for interactive query", waitDur)
+			if waitDur > maxWait {
+				return "", fmt.Errorf("Groq rate limited (429) and requested a retry wait duration of %v which exceeds the %v cap for this call", waitDur, maxWait)
 			}
 			log.Printf("[Groq] Rate limited (429), waiting %v before retry...", waitDur)
 			time.Sleep(waitDur)

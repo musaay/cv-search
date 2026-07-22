@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	_ "cv-search/docs" // Swagger docs
 	"cv-search/internal/api"
 	"cv-search/internal/config"
+	"cv-search/internal/reprocess"
 	"cv-search/internal/storage"
 
 	"github.com/joho/godotenv"
@@ -58,6 +60,18 @@ func main() {
 	apiSrv := api.NewAPI(db, cfg)
 	router := api.NewRouter(apiSrv)
 
+	// Optional one-off backlog job, gated entirely by env vars so it can be
+	// toggled on/off per deploy without a code change:
+	//   RUN_REPROCESS_JOB=true       — enables the job on this startup
+	//   REPROCESS_DRY_RUN=true|false — defaults to true (report only, no writes)
+	// Runs in the background so it never blocks the HTTP server from starting
+	// (Railway health checks still pass immediately). Turn RUN_REPROCESS_JOB
+	// off again once the logs show "Completed" so it doesn't re-run on the
+	// next restart/deploy.
+	if os.Getenv("RUN_REPROCESS_JOB") == "true" {
+		go runReprocessJob(apiSrv)
+	}
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -90,4 +104,39 @@ func main() {
 	}
 
 	<-idleConnsClosed
+}
+
+// runReprocessJob runs the shared CV backlog reprocessing pass in-process,
+// reusing the API's already-constructed llmService (and therefore its
+// shared rate limiter) instead of spinning up a second, uncoordinated one —
+// critical for not exceeding Groq's real per-model RPM limit while the API
+// is also serving live search/upload traffic. Gated by RUN_REPROCESS_JOB /
+// REPROCESS_DRY_RUN env vars (see main()). Any error here is logged, not
+// fatal — a failed job run must never take down the running API server.
+func runReprocessJob(apiSrv *api.API) {
+	dryRun := true // safe default: never mutate data unless explicitly opted in
+	if v := os.Getenv("REPROCESS_DRY_RUN"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			dryRun = b
+		}
+	}
+
+	log.Printf("[ReprocessJob] Starting (dry_run=%v)...", dryRun)
+
+	opts := reprocess.Options{
+		DryRun:      dryRun,
+		LLMProvider: os.Getenv("LLM_PROVIDER"),
+	}
+	if v := os.Getenv("REPROCESS_BATCH_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			opts.BatchThreshold = n
+		}
+	}
+
+	if err := apiSrv.RunReprocessJob(context.Background(), opts); err != nil {
+		log.Printf("[ReprocessJob] run failed: %v", err)
+		return
+	}
+
+	log.Printf("[ReprocessJob] Finished. Set RUN_REPROCESS_JOB=false and redeploy so this doesn't run again on the next restart.")
 }

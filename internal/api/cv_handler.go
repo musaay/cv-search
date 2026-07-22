@@ -364,15 +364,20 @@ func (a *API) GetJobStatusHandler(w http.ResponseWriter, r *http.Request) {
 		response["message"] = "CV processing in progress"
 	} else if job.Status == "pending" {
 		response["message"] = "CV processing queued"
+	} else if job.Status == "batch_submitted" {
+		response["message"] = "CV submitted as part of a bulk batch job; results typically arrive within minutes to a few hours"
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
 
-// BulkCVUploadHandler handles bulk CV file uploads (up to 20 files, 5 MB each).
+// BulkCVUploadHandler handles bulk CV file uploads (up to MaxBulkFileCount files, MaxFileSizeMB each).
+// Uploads at or below MaxRealtimeCVCount are processed via the real-time queue (seconds);
+// larger ones are submitted as a single Groq Batch API job (minutes-to-hours, but immune
+// to the standard per-model rate limit and 50% cheaper).
 // @Summary Bulk upload CVs
-// @Description Upload multiple CV files at once (max 20 files, 5 MB each, 100 MB total)
+// @Description Upload multiple CV files at once (max configurable via MAX_BULK_FILE_COUNT)
 // @Tags cv
 // @Accept multipart/form-data
 // @Produce json
@@ -414,6 +419,15 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 	results := make([]FileResult, 0, len(files))
 	var batchJobs []BatchJob
 	queued, skipped := 0, 0
+
+	// Files that parsed/saved successfully are collected here first; whether
+	// they're queued for real-time processing or submitted as a single Groq
+	// Batch API job is decided AFTER the loop, based on how many there are.
+	type pendingUpload struct {
+		resultIdx int
+		job       CVProcessingJob
+	}
+	var pending []pendingUpload
 
 	maxFileSize := int64(a.cfg.MaxFileSizeMB) << 20
 	for _, fileHeader := range files {
@@ -488,21 +502,62 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if !a.queueCVProcessingJob(jobID, int64(cvID), parsedCV.FullText) {
-			res.Status = "queue_full"
-			skipped++
-			results = append(results, res)
-			continue
-		}
-
 		cvIDVal := int64(cvID)
 		res.CVID = &cvIDVal
 		res.JobID = &jobID
-		res.Status = "queued"
 		res.CheckStatusURL = fmt.Sprintf("/api/cv/job/%d", jobID)
 		queued++
 		batchJobs = append(batchJobs, BatchJob{JobID: jobID, Filename: fileHeader.Filename, CVID: int64(cvID)})
+		resultIdx := len(results)
 		results = append(results, res)
+		pending = append(pending, pendingUpload{
+			resultIdx: resultIdx,
+			job: CVProcessingJob{
+				JobID:     jobID,
+				CVFileID:  int64(cvID),
+				CVText:    parsedCV.FullText,
+				Timestamp: time.Now(),
+			},
+		})
+	}
+
+	// Route: small bulk uploads go through the real-time queue (fast, seconds);
+	// large ones are submitted as a single Groq Batch API job instead, which
+	// doesn't count against the standard rate limit (separate quota) and is
+	// 50% cheaper — at the cost of results taking minutes-to-hours instead of
+	// seconds. Only available when the LLM provider is Groq.
+	useBatchAPI := a.llmService != nil && a.cfg.LLMProvider == "groq" && len(pending) > a.cfg.MaxRealtimeCVCount
+
+	if useBatchAPI {
+		jobs := make([]CVProcessingJob, 0, len(pending))
+		for _, p := range pending {
+			jobs = append(jobs, p.job)
+		}
+
+		groqBatchID, err := a.SubmitCVExtractionBatch(r.Context(), jobs)
+		if err != nil {
+			log.Printf("[BulkUpload] Groq batch submission failed, falling back to real-time queue: %v", err)
+			useBatchAPI = false
+		} else {
+			log.Printf("[BulkUpload] Submitted %d CVs as Groq batch %s", len(pending), groqBatchID)
+			for _, p := range pending {
+				results[p.resultIdx].Status = "batch_submitted"
+			}
+		}
+	}
+
+	if !useBatchAPI {
+		for _, p := range pending {
+			if !a.queueCVProcessingJob(p.job.JobID, p.job.CVFileID, p.job.CVText) {
+				results[p.resultIdx].Status = "queue_full"
+				results[p.resultIdx].JobID = nil
+				results[p.resultIdx].CheckStatusURL = ""
+				queued--
+				skipped++
+				continue
+			}
+			results[p.resultIdx].Status = "queued"
+		}
 	}
 
 	// Persist batch to in-memory store
@@ -512,7 +567,7 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	})
 
-	log.Printf("[BulkUpload] batch=%s total=%d queued=%d skipped=%d", batchID, len(files), queued, skipped)
+	log.Printf("[BulkUpload] batch=%s total=%d queued=%d skipped=%d batch_api=%v", batchID, len(files), queued, skipped, useBatchAPI)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusMultiStatus) // 207

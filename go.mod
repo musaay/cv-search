@@ -4,11 +4,11 @@ go 1.24
 
 require (
 	code.sajari.com/docconv v1.3.8
-	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.4.0
 	github.com/lib/pq v1.10.9
 	github.com/swaggo/http-swagger v1.3.4
 	github.com/swaggo/swag v1.16.6
+	golang.org/x/time v0.9.0
 )
 
 require (
