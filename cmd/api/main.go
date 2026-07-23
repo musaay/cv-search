@@ -13,6 +13,7 @@ import (
 	_ "cv-search/docs" // Swagger docs
 	"cv-search/internal/api"
 	"cv-search/internal/config"
+	"cv-search/internal/llm"
 	"cv-search/internal/reprocess"
 	"cv-search/internal/storage"
 
@@ -69,7 +70,7 @@ func main() {
 	// off again once the logs show "Completed" so it doesn't re-run on the
 	// next restart/deploy.
 	if os.Getenv("RUN_REPROCESS_JOB") == "true" {
-		go runReprocessJob(apiSrv)
+		go runReprocessJob(apiSrv, cfg)
 	}
 
 	port := os.Getenv("PORT")
@@ -106,14 +107,16 @@ func main() {
 	<-idleConnsClosed
 }
 
-// runReprocessJob runs the shared CV backlog reprocessing pass in-process,
-// reusing the API's already-constructed llmService (and therefore its
-// shared rate limiter) instead of spinning up a second, uncoordinated one —
-// critical for not exceeding Groq's real per-model RPM limit while the API
-// is also serving live search/upload traffic. Gated by RUN_REPROCESS_JOB /
-// REPROCESS_DRY_RUN env vars (see main()). Any error here is logged, not
-// fatal — a failed job run must never take down the running API server.
-func runReprocessJob(apiSrv *api.API) {
+// runReprocessJob runs the shared CV backlog reprocessing pass in-process.
+// By default it reuses the API's already-constructed llmService (and
+// therefore its shared rate limiter) instead of spinning up a second,
+// uncoordinated one. Set REPROCESS_LLM_PROVIDER (e.g. "openai") to run the
+// job against a different provider entirely -- useful when the main
+// provider's account has run out of daily capacity, since it doesn't share
+// that provider's quota. Gated by RUN_REPROCESS_JOB / REPROCESS_DRY_RUN env
+// vars (see main()). Any error here is logged, not fatal -- a failed job run
+// must never take down the running API server.
+func runReprocessJob(apiSrv *api.API, cfg *config.Config) {
 	dryRun := true // safe default: never mutate data unless explicitly opted in
 	if v := os.Getenv("REPROCESS_DRY_RUN"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
@@ -123,9 +126,29 @@ func runReprocessJob(apiSrv *api.API) {
 
 	log.Printf("[ReprocessJob] Starting (dry_run=%v)...", dryRun)
 
+	llmProvider := cfg.LLMProvider
+	var llmSvcOverride *llm.Service
+	if override := os.Getenv("REPROCESS_LLM_PROVIDER"); override != "" && override != cfg.LLMProvider {
+		llmProvider = override
+		model := os.Getenv("REPROCESS_LLM_MODEL")
+		if model == "" {
+			model = "gpt-4o-mini"
+		}
+		apiKey := cfg.OpenAIAPIKey
+		if override == "groq" {
+			apiKey = cfg.LLMAPIKey
+		}
+		if apiKey == "" {
+			log.Printf("[ReprocessJob] REPROCESS_LLM_PROVIDER=%s set but no matching API key configured, aborting", override)
+			return
+		}
+		log.Printf("[ReprocessJob] Using override provider=%s model=%s for this run", override, model)
+		llmSvcOverride = llm.NewService(override, apiKey, model)
+	}
+
 	opts := reprocess.Options{
 		DryRun:          dryRun,
-		LLMProvider:     os.Getenv("LLM_PROVIDER"),
+		LLMProvider:     llmProvider,
 		DisableBatchAPI: os.Getenv("GROQ_BATCH_DISABLED") == "true",
 	}
 	if v := os.Getenv("REPROCESS_BATCH_THRESHOLD"); v != "" {
@@ -134,7 +157,7 @@ func runReprocessJob(apiSrv *api.API) {
 		}
 	}
 
-	if err := apiSrv.RunReprocessJob(context.Background(), opts); err != nil {
+	if err := apiSrv.RunReprocessJob(context.Background(), llmSvcOverride, opts); err != nil {
 		log.Printf("[ReprocessJob] run failed: %v", err)
 		return
 	}

@@ -302,20 +302,25 @@ func (a *API) QueueEmbeddingJob(cvID int64, nodeIDs []string) {
 }
 
 // RunReprocessJob runs the shared CV backlog reprocessing pass using this
-// API's already-constructed llmService/graphBuilder/embeddingService —
-// critically, the SAME llm.Service instance (and therefore the SAME rate
-// limiter) used by search and the real-time CV upload path. This avoids
-// spinning up a second, uncoordinated rate limiter that could combine with
-// live traffic to exceed Groq's actual per-model RPM limit and cause 429s
-// all over again.
-func (a *API) RunReprocessJob(ctx context.Context, opts reprocess.Options) error {
-	if a.llmService == nil {
+// API's already-constructed graphBuilder/embeddingService. By default it
+// reuses the SAME llm.Service instance (and therefore the SAME rate limiter)
+// used by search and the real-time CV upload path — avoiding a second,
+// uncoordinated rate limiter that could combine with live traffic to exceed
+// Groq's per-model RPM limit. Pass a non-nil llmSvcOverride (e.g. an
+// OpenAI-backed Service) to run the job against a different provider
+// entirely — safe to do since it doesn't share Groq's quota either way.
+func (a *API) RunReprocessJob(ctx context.Context, llmSvcOverride *llm.Service, opts reprocess.Options) error {
+	llmSvc := a.llmService
+	if llmSvcOverride != nil {
+		llmSvc = llmSvcOverride
+	}
+	if llmSvc == nil {
 		return fmt.Errorf("LLM service not available")
 	}
 	if a.enhancedSearchEngine == nil || a.enhancedSearchEngine.GetEmbeddingService() == nil {
 		return fmt.Errorf("embedding service not available")
 	}
-	return reprocess.Run(ctx, a.db, a.llmService, a.graphBuilder, a.enhancedSearchEngine.GetEmbeddingService(), opts)
+	return reprocess.Run(ctx, a.db, llmSvc, a.graphBuilder, a.enhancedSearchEngine.GetEmbeddingService(), opts)
 }
 
 // SubmitCVExtractionBatch submits a set of CV extraction jobs as a single Groq
