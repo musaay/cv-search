@@ -90,13 +90,13 @@ func LoadConfig() *Config {
 	}
 
 	return &Config{
-		DatabaseURL:     os.Getenv("DATABASE_URL"),
-		LLMProvider:     llmProvider,
-		LLMModel:        llmModel,
-		LLMAPIKey:       llmAPIKey,
-		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
-		UploadsDir:      os.Getenv("UPLOADS_DIR"),
-		DisableLLMCache: os.Getenv("LLM_CACHE_DISABLED") == "true",
+		DatabaseURL:        os.Getenv("DATABASE_URL"),
+		LLMProvider:        llmProvider,
+		LLMModel:           llmModel,
+		LLMAPIKey:          llmAPIKey,
+		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
+		UploadsDir:         os.Getenv("UPLOADS_DIR"),
+		DisableLLMCache:    os.Getenv("LLM_CACHE_DISABLED") == "true",
 		MaxFileSizeMB:      maxFileSizeMB,
 		MaxBulkFileCount:   maxBulkFileCount,
 		MaxRealtimeCVCount: maxRealtimeCVCount,

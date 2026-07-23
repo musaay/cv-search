@@ -146,7 +146,18 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 	}
 
 	log.Printf("[Reprocess] Found %d broken/unprocessed candidate(s) total:", len(broken))
-	for _, bc := range broken {
+	// Cap the per-item listing so this doesn't flood the log pipe: printing
+	// thousands of lines in under a second can exceed hosting providers'
+	// log-rate limits (e.g. Railway's 500 logs/sec) and, since log.Printf
+	// writes are serialized on a shared mutex, can even stall the HTTP
+	// server long enough to fail health checks and get the container
+	// restarted mid-run.
+	const maxListedItems = 20
+	for i, bc := range broken {
+		if i >= maxListedItems {
+			log.Printf("[Reprocess]   ... and %d more (sample above, run report only lists the first %d)", len(broken)-maxListedItems, maxListedItems)
+			break
+		}
 		log.Printf("[Reprocess]   [cand=%d] %-25s node=%-12s edges=%d skills=%d cv_id=%q",
 			bc.CandID, bc.Name, bc.GraphNodeStr, bc.EdgeCount, bc.SkillsLen, bc.CVIDStr)
 	}
@@ -164,14 +175,22 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 		currentCandidateID *int
 	}
 	var items []reprocessItem
+	skippedLogged, skippedTotal := 0, 0
+	logSkip := func(format string, args ...interface{}) {
+		skippedTotal++
+		if skippedLogged < maxListedItems {
+			log.Printf(format, args...)
+			skippedLogged++
+		}
+	}
 	for _, bc := range broken {
 		if bc.CVIDStr == "" {
-			log.Printf("[Reprocess] [cand=%d] %s SKIP: no cv_id in graph_node — needs manual re-upload", bc.CandID, bc.Name)
+			logSkip("[Reprocess] [cand=%d] %s SKIP: no cv_id in graph_node — needs manual re-upload", bc.CandID, bc.Name)
 			continue
 		}
 		cvFileID, err := strconv.ParseInt(bc.CVIDStr, 10, 64)
 		if err != nil {
-			log.Printf("[Reprocess] [cand=%d] %s SKIP: invalid cv_id %q", bc.CandID, bc.Name, bc.CVIDStr)
+			logSkip("[Reprocess] [cand=%d] %s SKIP: invalid cv_id %q", bc.CandID, bc.Name, bc.CVIDStr)
 			continue
 		}
 
@@ -182,15 +201,18 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 			cvFileID,
 		).Scan(&parsedText, &currentCandidateID)
 		if err != nil {
-			log.Printf("[Reprocess] [cand=%d] %s SKIP: cv_files id=%d not found: %v", bc.CandID, bc.Name, cvFileID, err)
+			logSkip("[Reprocess] [cand=%d] %s SKIP: cv_files id=%d not found: %v", bc.CandID, bc.Name, cvFileID, err)
 			continue
 		}
 		if parsedText == "" {
-			log.Printf("[Reprocess] [cand=%d] %s SKIP: no parsed_text for cv_files id=%d — needs re-upload", bc.CandID, bc.Name, cvFileID)
+			logSkip("[Reprocess] [cand=%d] %s SKIP: no parsed_text for cv_files id=%d — needs re-upload", bc.CandID, bc.Name, cvFileID)
 			continue
 		}
 
 		items = append(items, reprocessItem{bc: bc, cvFileID: cvFileID, parsedText: parsedText, currentCandidateID: currentCandidateID})
+	}
+	if skippedTotal > skippedLogged {
+		log.Printf("[Reprocess] ... %d more skipped (not logged individually)", skippedTotal-skippedLogged)
 	}
 
 	if len(items) == 0 {
@@ -242,8 +264,14 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 					cvFileID, _ := strconv.ParseInt(customID, 10, 64)
 					extractions[cvFileID] = extraction
 				}
+				loggedLineErrors := 0
 				for customID, msg := range lineErrors {
+					if loggedLineErrors >= maxListedItems {
+						log.Printf("[Reprocess]   ... and %d more batch line failures (will retry synchronously)", len(lineErrors)-loggedLineErrors)
+						break
+					}
 					log.Printf("[Reprocess]   batch line failed for cv_files id=%s: %s (will retry synchronously)", customID, msg)
+					loggedLineErrors++
 				}
 			}
 		}
