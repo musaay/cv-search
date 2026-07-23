@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -526,7 +527,8 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 	// doesn't count against the standard rate limit (separate quota) and is
 	// 50% cheaper — at the cost of results taking minutes-to-hours instead of
 	// seconds. Only available when the LLM provider is Groq.
-	useBatchAPI := a.llmService != nil && a.cfg.LLMProvider == "groq" && len(pending) > a.cfg.MaxRealtimeCVCount
+	useBatchAPI := os.Getenv("GROQ_BATCH_DISABLED") != "true" &&
+		a.llmService != nil && a.cfg.LLMProvider == "groq" && len(pending) > a.cfg.MaxRealtimeCVCount
 
 	if useBatchAPI {
 		jobs := make([]CVProcessingJob, 0, len(pending))

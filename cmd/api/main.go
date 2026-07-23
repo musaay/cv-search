@@ -124,8 +124,9 @@ func runReprocessJob(apiSrv *api.API) {
 	log.Printf("[ReprocessJob] Starting (dry_run=%v)...", dryRun)
 
 	opts := reprocess.Options{
-		DryRun:      dryRun,
-		LLMProvider: os.Getenv("LLM_PROVIDER"),
+		DryRun:          dryRun,
+		LLMProvider:     os.Getenv("LLM_PROVIDER"),
+		DisableBatchAPI: os.Getenv("GROQ_BATCH_DISABLED") == "true",
 	}
 	if v := os.Getenv("REPROCESS_BATCH_THRESHOLD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

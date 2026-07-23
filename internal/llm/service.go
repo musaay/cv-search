@@ -62,11 +62,11 @@ type Candidate struct {
 }
 
 type Skill struct {
-	Name           string  `json:"skill"`
-	Proficiency    string  `json:"proficiency"`
-	Years          *int    `json:"years"`
-	Confidence     float64 `json:"confidence"`
-	NormalizedFrom string  `json:"normalized_from,omitempty"`
+	Name           string   `json:"skill"`
+	Proficiency    string   `json:"proficiency"`
+	Years          *float64 `json:"years"` // LLM sometimes returns fractional years (e.g. 0.3) — must not be *int or JSON unmarshal fails and discards the whole extraction
+	Confidence     float64  `json:"confidence"`
+	NormalizedFrom string   `json:"normalized_from,omitempty"`
 }
 
 type Company struct {

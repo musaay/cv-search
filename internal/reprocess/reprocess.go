@@ -40,6 +40,11 @@ type Options struct {
 	// BatchThreshold: above this many items, a Groq Batch API submission is
 	// attempted before falling back to synchronous processing.
 	BatchThreshold int
+	// DisableBatchAPI, if true, skips attempting the Groq Batch API entirely
+	// and goes straight to synchronous processing. Useful when the account
+	// plan doesn't support Batch API — avoids a pointless submit-then-403
+	// round trip on every run.
+	DisableBatchAPI bool
 }
 
 type brokenCandidate struct {
@@ -225,84 +230,22 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 	// standard per-model rate limit (separate quota) and is 50% cheaper.
 	// Small runs stay synchronous (already self-throttled by llm.Service's
 	// built-in rate limiter).
-	extractions := make(map[int64]*llm.CVExtraction, len(items))
-
-	if opts.LLMProvider == "groq" && len(items) > opts.BatchThreshold {
-		log.Printf("[Reprocess] Submitting %d CVs as a Groq Batch API job (threshold=%d)...", len(items), opts.BatchThreshold)
-		batchItems := make(map[string]string, len(items))
-		for _, it := range items {
-			batchItems[fmt.Sprintf("%d", it.cvFileID)] = it.parsedText
-		}
-
-		groqBatchID, _, err := llmSvc.SubmitExtractionBatch(batchItems, "24h")
-		if err != nil {
-			log.Printf("[Reprocess] Groq batch submission failed, falling back to synchronous processing for all %d items: %v", len(items), err)
-		} else {
-			log.Printf("[Reprocess] Batch submitted: %s — polling every 30s until complete...", groqBatchID)
-
-			var outputFileID string
-			for {
-				time.Sleep(30 * time.Second)
-				status, err := llmSvc.GetGroqBatchStatus(groqBatchID)
-				if err != nil {
-					log.Printf("[Reprocess]   status check failed: %v (retrying)", err)
-					continue
-				}
-				log.Printf("[Reprocess]   batch status=%s (%d/%d completed)", status.Status, status.RequestCounts.Completed, status.RequestCounts.Total)
-				if status.Status == "completed" || status.Status == "failed" || status.Status == "expired" || status.Status == "cancelled" {
-					outputFileID = status.OutputFileID
-					break
-				}
-			}
-
-			if outputFileID != "" {
-				results, lineErrors, err := llmSvc.FetchExtractionBatchResults(outputFileID)
-				if err != nil {
-					log.Printf("[Reprocess]   failed to fetch batch results: %v", err)
-				}
-				for customID, extraction := range results {
-					cvFileID, _ := strconv.ParseInt(customID, 10, 64)
-					extractions[cvFileID] = extraction
-				}
-				loggedLineErrors := 0
-				for customID, msg := range lineErrors {
-					if loggedLineErrors >= maxListedItems {
-						log.Printf("[Reprocess]   ... and %d more batch line failures (will retry synchronously)", len(lineErrors)-loggedLineErrors)
-						break
-					}
-					log.Printf("[Reprocess]   batch line failed for cv_files id=%s: %s (will retry synchronously)", customID, msg)
-					loggedLineErrors++
-				}
-			}
-		}
-	}
-
-	// Anything not covered by a batch result (small run, non-Groq provider, or
-	// a batch line that failed/expired) is processed synchronously — safe even
-	// for the leftovers since llm.Service self-throttles.
+	//
+	// Each successful extraction is applied (graph/candidate/embedding) to
+	// the DB immediately, one item at a time, instead of collecting all
+	// extractions first and writing everything at the end. For a run this
+	// size (thousands of items, potentially hours), applying incrementally
+	// means a mid-run restart/crash only loses the item in flight — not all
+	// progress made so far.
+	itemsByCVFileID := make(map[int64]reprocessItem, len(items))
 	for _, it := range items {
-		if _, ok := extractions[it.cvFileID]; ok {
-			continue
-		}
-		log.Printf("[Reprocess] [cand=%d] %s: running synchronous LLM extraction (cv_files id=%d, %d chars)...",
-			it.bc.CandID, it.bc.Name, it.cvFileID, len(it.parsedText))
-		extraction, err := llmSvc.ExtractEntities(it.parsedText)
-		if err != nil {
-			log.Printf("[Reprocess]   SKIP: extraction failed: %v", err)
-			continue
-		}
-		extractions[it.cvFileID] = extraction
+		itemsByCVFileID[it.cvFileID] = it
 	}
-
-	// Apply every successful extraction: rebuild graph, upsert candidate,
-	// link cv_files, sync BM25 fields, and re-embed.
+	applied := make(map[int64]bool, len(items))
 	fixed, failed := 0, 0
-	for _, it := range items {
-		extraction, ok := extractions[it.cvFileID]
-		if !ok {
-			failed++
-			continue
-		}
+
+	applyOne := func(it reprocessItem, extraction *llm.CVExtraction) {
+		applied[it.cvFileID] = true
 
 		log.Printf("[Reprocess] == [cand=%d] %s ==", it.bc.CandID, it.bc.Name)
 		log.Printf("[Reprocess]   Got: %d skills, %d companies, %d education",
@@ -322,7 +265,7 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 		if err := graphBuilder.BuildFromLLMExtraction(ctx, int(it.cvFileID), extractMap); err != nil {
 			log.Printf("[Reprocess]   graph build failed: %v", err)
 			failed++
-			continue
+			return
 		}
 		log.Printf("[Reprocess]   Graph OK")
 
@@ -340,7 +283,7 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 		if err != nil {
 			log.Printf("[Reprocess]   UpsertCandidateForGraphNode failed: %v", err)
 			failed++
-			continue
+			return
 		}
 		log.Printf("[Reprocess]   Candidate id=%d", candidateID)
 
@@ -379,6 +322,77 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 
 		log.Printf("[Reprocess] DONE [cand=%d] %s", candidateID, it.bc.Name)
 		fixed++
+	}
+
+	if !opts.DisableBatchAPI && opts.LLMProvider == "groq" && len(items) > opts.BatchThreshold {
+		log.Printf("[Reprocess] Submitting %d CVs as a Groq Batch API job (threshold=%d)...", len(items), opts.BatchThreshold)
+		batchItems := make(map[string]string, len(items))
+		for _, it := range items {
+			batchItems[fmt.Sprintf("%d", it.cvFileID)] = it.parsedText
+		}
+
+		groqBatchID, _, err := llmSvc.SubmitExtractionBatch(batchItems, "24h")
+		if err != nil {
+			log.Printf("[Reprocess] Groq batch submission failed, falling back to synchronous processing for all %d items: %v", len(items), err)
+		} else {
+			log.Printf("[Reprocess] Batch submitted: %s — polling every 30s until complete...", groqBatchID)
+
+			var outputFileID string
+			for {
+				time.Sleep(30 * time.Second)
+				status, err := llmSvc.GetGroqBatchStatus(groqBatchID)
+				if err != nil {
+					log.Printf("[Reprocess]   status check failed: %v (retrying)", err)
+					continue
+				}
+				log.Printf("[Reprocess]   batch status=%s (%d/%d completed)", status.Status, status.RequestCounts.Completed, status.RequestCounts.Total)
+				if status.Status == "completed" || status.Status == "failed" || status.Status == "expired" || status.Status == "cancelled" {
+					outputFileID = status.OutputFileID
+					break
+				}
+			}
+
+			if outputFileID != "" {
+				results, lineErrors, err := llmSvc.FetchExtractionBatchResults(outputFileID)
+				if err != nil {
+					log.Printf("[Reprocess]   failed to fetch batch results: %v", err)
+				}
+				for customID, extraction := range results {
+					cvFileID, _ := strconv.ParseInt(customID, 10, 64)
+					if it, ok := itemsByCVFileID[cvFileID]; ok {
+						applyOne(it, extraction)
+					}
+				}
+				loggedLineErrors := 0
+				for customID, msg := range lineErrors {
+					if loggedLineErrors >= maxListedItems {
+						log.Printf("[Reprocess]   ... and %d more batch line failures (will retry synchronously)", len(lineErrors)-loggedLineErrors)
+						break
+					}
+					log.Printf("[Reprocess]   batch line failed for cv_files id=%s: %s (will retry synchronously)", customID, msg)
+					loggedLineErrors++
+				}
+			}
+		}
+	}
+
+	// Anything not covered by a batch result (small run, non-Groq provider, or
+	// a batch line that failed/expired) is processed synchronously — safe even
+	// for the leftovers since llm.Service self-throttles. Applied immediately
+	// on success, same as the batch path above.
+	for _, it := range items {
+		if applied[it.cvFileID] {
+			continue
+		}
+		log.Printf("[Reprocess] [cand=%d] %s: running synchronous LLM extraction (cv_files id=%d, %d chars)...",
+			it.bc.CandID, it.bc.Name, it.cvFileID, len(it.parsedText))
+		extraction, err := llmSvc.ExtractEntities(it.parsedText)
+		if err != nil {
+			log.Printf("[Reprocess]   SKIP: extraction failed: %v", err)
+			failed++
+			continue
+		}
+		applyOne(it, extraction)
 	}
 
 	log.Printf("[Reprocess] Completed: %d fixed, %d failed (out of %d candidates found)", fixed, failed, len(broken))
