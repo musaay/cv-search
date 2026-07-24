@@ -378,10 +378,17 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	}
 
 	// Step 3: Take top N for LLM reranking.
-	// Skipped when skillFilterActive=true: all skill-matched candidates go to LLM regardless of count.
-	// This ensures graph-only candidates (e.g. Architects with the right skill) aren't cut by RRF vector bias.
-	// For skill-less queries, FinalTopN acts as an LLM cost guard.
-	if !skillFilterActive && config.FinalTopN > 0 && len(fusedCandidates) > config.FinalTopN {
+	// We MUST cap the number of candidates sent to the LLM to avoid HTTP 413 (Token limit exceeded) errors.
+	// Even if skillFilterActive is true, sending hundreds of candidates in a single prompt will crash the LLM.
+	if config.FinalTopN > 0 && len(fusedCandidates) > config.FinalTopN {
+		// Ensure list is strictly sorted by FusionScore before truncating, 
+		// as earlier score modifiers (e.g., interview outcome) might have altered scores.
+		sort.Slice(fusedCandidates, func(i, j int) bool {
+			return fusedCandidates[i].FusionScore > fusedCandidates[j].FusionScore
+		})
+		
+		// If skill filter is active, we might want a slightly larger pool before LLM scoring, 
+		// but we still must cap it strictly. We use FinalTopN as the hard limit.
 		fusedCandidates = fusedCandidates[:config.FinalTopN]
 	}
 
