@@ -230,7 +230,7 @@ func (q *GraphQuerier) buildQuery(criteria *SearchCriteria) (string, []interface
 	// Filter by minimum experience years
 	if criteria.MinExperience != nil && *criteria.MinExperience > 0 {
 		conditions = append(conditions, fmt.Sprintf(
-			"(p.properties->>'total_experience_years')::int >= $%d", argIndex))
+			"(p.properties->>'total_experience_years')::numeric >= $%d", argIndex))
 		args = append(args, *criteria.MinExperience)
 		argIndex++
 	}
@@ -238,7 +238,7 @@ func (q *GraphQuerier) buildQuery(criteria *SearchCriteria) (string, []interface
 	// Filter by maximum experience years
 	if criteria.MaxExperience != nil && *criteria.MaxExperience > 0 {
 		conditions = append(conditions, fmt.Sprintf(
-			"(p.properties->>'total_experience_years')::int <= $%d", argIndex))
+			"(p.properties->>'total_experience_years')::numeric <= $%d", argIndex))
 		args = append(args, *criteria.MaxExperience)
 		argIndex++
 	}
