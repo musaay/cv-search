@@ -313,9 +313,14 @@ func (db *DB) UpsertCandidateForGraphNode(ctx context.Context, graphNodeID int, 
 	return candidateID, nil
 }
 
-// ListCandidates returns a paginated list of candidates with basic enrichment from graph_nodes.
-func (db *DB) ListCandidates(ctx context.Context, limit, offset int) ([]CandidateListItem, error) {
+// ListCandidates returns a paginated list of candidates with basic enrichment from graph_nodes and the total count.
+func (db *DB) ListCandidates(ctx context.Context, limit, offset int) ([]CandidateListItem, int, error) {
 	db.connection.ExecContext(ctx, "DEALLOCATE ALL")
+
+	var total int
+	if err := db.connection.QueryRowContext(ctx, "SELECT COUNT(*) FROM candidates").Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count candidates failed: %w", err)
+	}
 
 	query := `
 		SELECT
@@ -341,7 +346,7 @@ func (db *DB) ListCandidates(ctx context.Context, limit, offset int) ([]Candidat
 	`
 	rows, err := db.connection.QueryContext(ctx, query, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("list candidates failed: %w", err)
+		return nil, 0, fmt.Errorf("list candidates failed: %w", err)
 	}
 	defer rows.Close()
 
@@ -352,11 +357,11 @@ func (db *DB) ListCandidates(ctx context.Context, limit, offset int) ([]Candidat
 			&item.ID, &item.Name, &item.CurrentPosition, &item.Seniority,
 			&item.InterviewCount, &item.LatestOutcome, &item.CreatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("scan candidate list row: %w", err)
+			return nil, 0, fmt.Errorf("scan candidate list row: %w", err)
 		}
 		result = append(result, item)
 	}
-	return result, rows.Err()
+	return result, total, rows.Err()
 }
 
 // GetCandidateDetail returns the full candidate profile with all interviews.

@@ -127,21 +127,35 @@ func (a *API) reEmbed(candidateID int) {
 
 // ListCandidatesHandler returns a paginated list of candidates with basic enrichment.
 func (a *API) ListCandidatesHandler(w http.ResponseWriter, r *http.Request) {
-	limit := 50
+	limit := 20
 	offset := 0
+	page := 1
 
-	if v := r.URL.Query().Get("limit"); v != "" {
+	if v := r.URL.Query().Get("page"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+		}
+	}
+
+	if v := r.URL.Query().Get("pageSize"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	} else if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
 			limit = n
 		}
 	}
+
 	if v := r.URL.Query().Get("offset"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			offset = n
 		}
+	} else if page > 1 {
+		offset = (page - 1) * limit
 	}
 
-	candidates, err := a.db.ListCandidates(r.Context(), limit, offset)
+	candidates, total, err := a.db.ListCandidates(r.Context(), limit, offset)
 	if err != nil {
 		log.Printf("[CandidateHandler] ListCandidates failed: %v", err)
 		http.Error(w, "failed to list candidates", http.StatusInternalServerError)
@@ -155,7 +169,7 @@ func (a *API) ListCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(listCandidatesResponse{
 		Candidates: candidates,
-		Total:      len(candidates),
+		Total:      total,
 		Limit:      limit,
 		Offset:     offset,
 	})
