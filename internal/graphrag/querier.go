@@ -33,9 +33,12 @@ type SkillNode struct {
 }
 
 type CompanyNode struct {
-	Name      string `json:"name"`
-	Position  string `json:"position"`
-	IsCurrent bool   `json:"is_current"`
+	Name          string      `json:"name"`
+	Position      string      `json:"position"`
+	IsCurrent     bool        `json:"is_current"`
+	StartYear     interface{} `json:"start_year,omitempty"`
+	EndYear       interface{} `json:"end_year,omitempty"`
+	DurationYears interface{} `json:"duration_years,omitempty"`
 }
 
 type EducationNode struct {
@@ -284,7 +287,7 @@ func (q *GraphQuerier) enrichCandidate(ctx context.Context, result *CandidateRes
 
 	// Fetch companies
 	companyRows, err := q.db.QueryContext(ctx, `
-		SELECT c.node_id, c.properties, e.edge_type
+		SELECT c.node_id, c.properties, e.properties, e.edge_type
 		FROM graph_nodes p
 		JOIN graph_edges e ON p.id = e.source_node_id
 		JOIN graph_nodes c ON e.target_node_id = c.id
@@ -297,16 +300,27 @@ func (q *GraphQuerier) enrichCandidate(ctx context.Context, result *CandidateRes
 		defer companyRows.Close()
 		for companyRows.Next() {
 			var nodeID, edgeType string
-			var propsJSON []byte
-			if err := companyRows.Scan(&nodeID, &propsJSON, &edgeType); err == nil {
-				var props map[string]interface{}
-				if err := json.Unmarshal(propsJSON, &props); err == nil {
+			var companyPropsJSON, edgePropsJSON []byte
+			if err := companyRows.Scan(&nodeID, &companyPropsJSON, &edgePropsJSON, &edgeType); err == nil {
+				var companyProps, edgeProps map[string]interface{}
+				if err := json.Unmarshal(companyPropsJSON, &companyProps); err == nil {
 					company := CompanyNode{
-						Name:      props["name"].(string),
+						Name:      companyProps["name"].(string),
 						IsCurrent: edgeType == "WORKS_AT",
 					}
-					if pos, ok := props["position"].(string); ok {
-						company.Position = pos
+					if err := json.Unmarshal(edgePropsJSON, &edgeProps); err == nil {
+						if pos, ok := edgeProps["position"].(string); ok {
+							company.Position = pos
+						}
+						if start, ok := edgeProps["start_year"]; ok {
+							company.StartYear = start
+						}
+						if end, ok := edgeProps["end_year"]; ok {
+							company.EndYear = end
+						}
+						if duration, ok := edgeProps["duration_years"]; ok {
+							company.DurationYears = duration
+						}
 					}
 					result.Companies = append(result.Companies, company)
 				}
