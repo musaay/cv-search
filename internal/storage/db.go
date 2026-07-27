@@ -314,37 +314,108 @@ func (db *DB) UpsertCandidateForGraphNode(ctx context.Context, graphNodeID int, 
 }
 
 // ListCandidates returns a paginated list of candidates with basic enrichment from graph_nodes and the total count.
-func (db *DB) ListCandidates(ctx context.Context, limit, offset int) ([]CandidateListItem, int, error) {
+func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery, sortKey, direction string) ([]CandidateListItem, int, error) {
 	db.connection.ExecContext(ctx, "DEALLOCATE ALL")
 
 	var total int
-	if err := db.connection.QueryRowContext(ctx, "SELECT COUNT(*) FROM candidates").Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count candidates failed: %w", err)
+	searchQuery = strings.TrimSpace(searchQuery)
+	var countQuery string
+	var err error
+
+	if searchQuery != "" {
+		countQuery = `
+			SELECT COUNT(DISTINCT c.id)
+			FROM candidates c
+			LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
+			WHERE (c.name ILIKE $1 OR gn.properties->>'current_position' ILIKE $1 OR gn.properties->>'seniority' ILIKE $1)
+		`
+		searchParam := "%" + searchQuery + "%"
+		if err = db.connection.QueryRowContext(ctx, countQuery, searchParam).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("count candidates with search failed: %w", err)
+		}
+	} else {
+		countQuery = "SELECT COUNT(*) FROM candidates"
+		if err = db.connection.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("count candidates failed: %w", err)
+		}
 	}
 
-	query := `
-		SELECT
-			c.id,
-			c.name,
-			COALESCE(gn.properties->>'current_position', '') AS current_position,
-			COALESCE(gn.properties->>'seniority', '')         AS seniority,
-			COUNT(i.id)                                        AS interview_count,
-			COALESCE(
-				(SELECT outcome FROM interviews
-				 WHERE candidate_id = c.id
-				 ORDER BY interview_date DESC, id DESC
-				 LIMIT 1),
-				''
-			)                                                  AS latest_outcome,
-			c.created_at
-		FROM candidates c
-		LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
-		LEFT JOIN interviews i   ON i.candidate_id = c.id
-		GROUP BY c.id, gn.properties
-		ORDER BY c.created_at DESC
-		LIMIT $1 OFFSET $2
-	`
-	rows, err := db.connection.QueryContext(ctx, query, limit, offset)
+	// Prepare ORDER BY clause
+	orderBy := "c.created_at DESC"
+	dir := "DESC"
+	if strings.ToUpper(direction) == "ASC" {
+		dir = "ASC"
+	}
+
+	switch strings.ToLower(sortKey) {
+	case "name", "c.name":
+		orderBy = fmt.Sprintf("c.name %s", dir)
+	case "current_position", "currentposition":
+		orderBy = fmt.Sprintf("COALESCE(gn.properties->>'current_position', '') %s", dir)
+	case "seniority":
+		orderBy = fmt.Sprintf("COALESCE(gn.properties->>'seniority', '') %s", dir)
+	case "interview_count", "interviewcount":
+		orderBy = fmt.Sprintf("interview_count %s", dir)
+	case "latest_outcome", "latestoutcome":
+		orderBy = fmt.Sprintf("latest_outcome %s", dir)
+	case "created_at", "createdat":
+		orderBy = fmt.Sprintf("c.created_at %s", dir)
+	}
+
+	var query string
+	var rows *sql.Rows
+	if searchQuery != "" {
+		query = fmt.Sprintf(`
+			SELECT
+				c.id,
+				c.name,
+				COALESCE(gn.properties->>'current_position', '') AS current_position,
+				COALESCE(gn.properties->>'seniority', '')         AS seniority,
+				COUNT(i.id)                                        AS interview_count,
+				COALESCE(
+					(SELECT outcome FROM interviews
+					 WHERE candidate_id = c.id
+					 ORDER BY interview_date DESC, id DESC
+					 LIMIT 1),
+					''
+				)                                                  AS latest_outcome,
+				c.created_at
+			FROM candidates c
+			LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
+			LEFT JOIN interviews i   ON i.candidate_id = c.id
+			WHERE (c.name ILIKE $1 OR gn.properties->>'current_position' ILIKE $1 OR gn.properties->>'seniority' ILIKE $1)
+			GROUP BY c.id, gn.properties
+			ORDER BY %s
+			LIMIT $2 OFFSET $3
+		`, orderBy)
+		searchParam := "%" + searchQuery + "%"
+		rows, err = db.connection.QueryContext(ctx, query, searchParam, limit, offset)
+	} else {
+		query = fmt.Sprintf(`
+			SELECT
+				c.id,
+				c.name,
+				COALESCE(gn.properties->>'current_position', '') AS current_position,
+				COALESCE(gn.properties->>'seniority', '')         AS seniority,
+				COUNT(i.id)                                        AS interview_count,
+				COALESCE(
+					(SELECT outcome FROM interviews
+					 WHERE candidate_id = c.id
+					 ORDER BY interview_date DESC, id DESC
+					 LIMIT 1),
+					''
+				)                                                  AS latest_outcome,
+				c.created_at
+			FROM candidates c
+			LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
+			LEFT JOIN interviews i   ON i.candidate_id = c.id
+			GROUP BY c.id, gn.properties
+			ORDER BY %s
+			LIMIT $1 OFFSET $2
+		`, orderBy)
+		rows, err = db.connection.QueryContext(ctx, query, limit, offset)
+	}
+
 	if err != nil {
 		return nil, 0, fmt.Errorf("list candidates failed: %w", err)
 	}
