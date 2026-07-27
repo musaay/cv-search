@@ -95,6 +95,8 @@ func NewRouter(a *API) http.Handler {
 
 	// Candidate management + interview tracking
 	mux.HandleFunc("GET /api/candidates", a.ListCandidatesHandler)
+	mux.HandleFunc("GET /api/candidates/duplicates", a.GetDuplicateCandidatesHandler)
+	mux.HandleFunc("POST /api/candidates/merge", a.MergeCandidatesHandler)
 	mux.HandleFunc("GET /api/candidates/{id}", a.GetCandidateHandler)
 	mux.HandleFunc("GET /api/candidates/{id}/similar", a.SimilarCandidatesHandler)
 	mux.HandleFunc("POST /api/candidates/{id}/interviews", a.CreateInterviewHandler)

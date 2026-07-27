@@ -1144,3 +1144,437 @@ func (db *DB) GetPersonNodeIDString(ctx context.Context, graphNodeID int) (strin
 	}
 	return nodeID, nil
 }
+
+// ─── Candidate Deduplication & Merging ───────────────────────────────────────────
+
+// DuplicateCandidateGroup represents a group of candidate records that share the same normalized name.
+type DuplicateCandidateGroup struct {
+	GroupKey          string                   `json:"group_key"`
+	Candidates        []DuplicateCandidateItem `json:"candidates"`
+	SuggestedMasterID int                      `json:"suggested_master_id"`
+}
+
+// DuplicateCandidateItem contains enriched profile details for a duplicate candidate row.
+type DuplicateCandidateItem struct {
+	CandidateID     int       `json:"candidate_id"`
+	GraphNodeID     int       `json:"graph_node_id"`
+	PersonNodeID    string    `json:"person_node_id"`
+	Name            string    `json:"name"`
+	CurrentPosition string    `json:"current_position"`
+	Seniority       string    `json:"seniority"`
+	ExperienceYears int       `json:"experience_years"`
+	TopSkills       []string  `json:"top_skills"`
+	Companies       []string  `json:"companies"`
+	Education       []string  `json:"education"`
+	CVFiles         []string  `json:"cv_files"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// FindDuplicateCandidateGroups scans candidates and groups them by normalized name where count > 1.
+func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCandidateGroup, error) {
+	db.connection.ExecContext(ctx, "DEALLOCATE ALL")
+
+	query := `
+		SELECT LOWER(TRIM(name)) AS group_key
+		FROM candidates
+		WHERE name IS NOT NULL AND TRIM(name) <> '' AND graph_node_id IS NOT NULL
+		GROUP BY LOWER(TRIM(name))
+		HAVING COUNT(*) > 1
+		ORDER BY COUNT(*) DESC, group_key ASC
+	`
+	rows, err := db.connection.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("find duplicate candidate groups: %w", err)
+	}
+	defer rows.Close()
+
+	var groupKeys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err == nil && key != "" {
+			groupKeys = append(groupKeys, key)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(groupKeys) == 0 {
+		return []DuplicateCandidateGroup{}, nil
+	}
+
+	var groups []DuplicateCandidateGroup
+	for _, key := range groupKeys {
+		items, err := db.getCandidateItemsByNormalizedName(ctx, key)
+		if err != nil || len(items) <= 1 {
+			continue
+		}
+
+		// Suggested master ID is the one with highest experience years or latest created_at (first item after sorting)
+		suggestedMasterID := items[0].CandidateID
+		maxExp := -1
+		for _, item := range items {
+			if item.ExperienceYears > maxExp {
+				maxExp = item.ExperienceYears
+				suggestedMasterID = item.CandidateID
+			} else if item.ExperienceYears == maxExp && item.CandidateID < suggestedMasterID {
+				// tie breaker
+				suggestedMasterID = item.CandidateID
+			}
+		}
+
+		groups = append(groups, DuplicateCandidateGroup{
+			GroupKey:          key,
+			Candidates:        items,
+			SuggestedMasterID: suggestedMasterID,
+		})
+	}
+
+	return groups, nil
+}
+
+func (db *DB) getCandidateItemsByNormalizedName(ctx context.Context, groupKey string) ([]DuplicateCandidateItem, error) {
+	query := `
+		SELECT
+			c.id,
+			COALESCE(c.graph_node_id, 0),
+			COALESCE(gn.node_id, ''),
+			c.name,
+			COALESCE(gn.properties->>'current_position', ''),
+			COALESCE(gn.properties->>'seniority', ''),
+			CASE 
+				WHEN gn.properties->>'total_experience_years' ~ '^[0-9]+(\.[0-9]+)?$' 
+				THEN (gn.properties->>'total_experience_years')::numeric 
+				ELSE 0 
+			END,
+			c.created_at
+		FROM candidates c
+		LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
+		WHERE LOWER(TRIM(c.name)) = $1 AND c.graph_node_id IS NOT NULL
+		ORDER BY CASE WHEN gn.properties->>'total_experience_years' ~ '^[0-9]+(\.[0-9]+)?$' THEN (gn.properties->>'total_experience_years')::numeric ELSE 0 END DESC, c.created_at DESC
+	`
+	rows, err := db.connection.QueryContext(ctx, query, groupKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []DuplicateCandidateItem
+	var candidateIDs []int
+	var graphNodeIDs []int
+
+	for rows.Next() {
+		var item DuplicateCandidateItem
+		var expFloat float64
+		if err := rows.Scan(
+			&item.CandidateID, &item.GraphNodeID, &item.PersonNodeID, &item.Name,
+			&item.CurrentPosition, &item.Seniority, &expFloat, &item.CreatedAt,
+		); err != nil {
+			continue
+		}
+		item.ExperienceYears = int(expFloat)
+		items = append(items, item)
+		candidateIDs = append(candidateIDs, item.CandidateID)
+		if item.GraphNodeID > 0 {
+			graphNodeIDs = append(graphNodeIDs, item.GraphNodeID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(items) == 0 {
+		return items, nil
+	}
+
+	// Enrich items with skills, companies, education, cv_files
+	idMap := make(map[int]int) // candidateID -> index in items
+	for i, item := range items {
+		idMap[item.CandidateID] = i
+	}
+
+	// Fetch CV files
+	if len(candidateIDs) > 0 {
+		placeholders := make([]string, len(candidateIDs))
+		args := make([]interface{}, len(candidateIDs))
+		for i, id := range candidateIDs {
+			placeholders[i] = fmt.Sprintf("$%d", i+1)
+			args[i] = id
+		}
+		cvQuery := fmt.Sprintf(`
+			SELECT COALESCE(candidate_id, 0), filename
+			FROM cv_files
+			WHERE candidate_id IN (%s)
+			ORDER BY uploaded_at DESC
+		`, strings.Join(placeholders, ","))
+		cvRows, err := db.connection.QueryContext(ctx, cvQuery, args...)
+		if err == nil {
+			defer cvRows.Close()
+			for cvRows.Next() {
+				var cid int
+				var fname string
+				if err := cvRows.Scan(&cid, &fname); err == nil && fname != "" {
+					if idx, ok := idMap[cid]; ok {
+						items[idx].CVFiles = append(items[idx].CVFiles, fname)
+					}
+				}
+			}
+		}
+	}
+
+	// Fetch skills, companies, education via graph edges
+	if len(graphNodeIDs) > 0 {
+		placeholders := make([]string, len(graphNodeIDs))
+		args := make([]interface{}, len(graphNodeIDs))
+		for i, id := range graphNodeIDs {
+			placeholders[i] = fmt.Sprintf("$%d", i+1)
+			args[i] = id
+		}
+		edgeQuery := fmt.Sprintf(`
+			SELECT gn.id, ge.edge_type, s.properties->>'name'
+			FROM graph_nodes gn
+			JOIN graph_edges ge ON ge.source_node_id = gn.id
+			JOIN graph_nodes s  ON s.id = ge.target_node_id
+			WHERE gn.id IN (%s)
+			  AND ge.edge_type IN ('HAS_SKILL', 'WORKED_AT', 'WORKS_AT', 'STUDIED_AT', 'GRADUATED_FROM')
+		`, strings.Join(placeholders, ","))
+		edgeRows, err := db.connection.QueryContext(ctx, edgeQuery, args...)
+		if err == nil {
+			defer edgeRows.Close()
+			nodeToCandIdx := make(map[int]int)
+			for idx, item := range items {
+				nodeToCandIdx[item.GraphNodeID] = idx
+			}
+			for edgeRows.Next() {
+				var gnID int
+				var edgeType, val string
+				if err := edgeRows.Scan(&gnID, &edgeType, &val); err == nil && val != "" {
+					if idx, ok := nodeToCandIdx[gnID]; ok {
+						switch edgeType {
+						case "HAS_SKILL":
+							if len(items[idx].TopSkills) < 10 {
+								items[idx].TopSkills = append(items[idx].TopSkills, val)
+							}
+						case "WORKED_AT", "WORKS_AT":
+							if len(items[idx].Companies) < 10 {
+								items[idx].Companies = append(items[idx].Companies, val)
+							}
+						case "STUDIED_AT", "GRADUATED_FROM":
+							if len(items[idx].Education) < 10 {
+								items[idx].Education = append(items[idx].Education, val)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return items, nil
+}
+
+// GetCandidateProfileDetails returns full enriched profile details for a single candidate.
+func (db *DB) GetCandidateProfileDetails(ctx context.Context, candidateID int) (*DuplicateCandidateItem, error) {
+	var item DuplicateCandidateItem
+	var expFloat float64
+	query := `
+		SELECT
+			c.id,
+			COALESCE(c.graph_node_id, 0),
+			COALESCE(gn.node_id, ''),
+			c.name,
+			COALESCE(gn.properties->>'current_position', ''),
+			COALESCE(gn.properties->>'seniority', ''),
+			CASE 
+				WHEN gn.properties->>'total_experience_years' ~ '^[0-9]+(\.[0-9]+)?$' 
+				THEN (gn.properties->>'total_experience_years')::numeric 
+				ELSE 0 
+			END,
+			c.created_at
+		FROM candidates c
+		LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
+		WHERE c.id = $1
+	`
+	err := db.connection.QueryRowContext(ctx, query, candidateID).Scan(
+		&item.CandidateID, &item.GraphNodeID, &item.PersonNodeID, &item.Name,
+		&item.CurrentPosition, &item.Seniority, &expFloat, &item.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	item.ExperienceYears = int(expFloat)
+
+	// Fetch CV files
+	cvRows, err := db.connection.QueryContext(ctx, `SELECT filename FROM cv_files WHERE candidate_id = $1 ORDER BY uploaded_at DESC`, candidateID)
+	if err == nil {
+		defer cvRows.Close()
+		for cvRows.Next() {
+			var fname string
+			if err := cvRows.Scan(&fname); err == nil && fname != "" {
+				item.CVFiles = append(item.CVFiles, fname)
+			}
+		}
+	}
+
+	// Fetch graph relationships
+	if item.GraphNodeID > 0 {
+		edgeRows, err := db.connection.QueryContext(ctx, `
+			SELECT ge.edge_type, s.properties->>'name'
+			FROM graph_edges ge
+			JOIN graph_nodes s ON s.id = ge.target_node_id
+			WHERE ge.source_node_id = $1
+			  AND ge.edge_type IN ('HAS_SKILL', 'WORKED_AT', 'WORKS_AT', 'STUDIED_AT', 'GRADUATED_FROM')
+		`, item.GraphNodeID)
+		if err == nil {
+			defer edgeRows.Close()
+			for edgeRows.Next() {
+				var edgeType, val string
+				if err := edgeRows.Scan(&edgeType, &val); err == nil && val != "" {
+					switch edgeType {
+					case "HAS_SKILL":
+						item.TopSkills = append(item.TopSkills, val)
+					case "WORKED_AT", "WORKS_AT":
+						item.Companies = append(item.Companies, val)
+					case "STUDIED_AT", "GRADUATED_FROM":
+						item.Education = append(item.Education, val)
+					}
+				}
+			}
+		}
+	}
+
+	return &item, nil
+}
+
+// MergeCandidateNodes executes an atomic database transaction merging duplicate candidate records and graph nodes into a master candidate.
+func (db *DB) MergeCandidateNodes(ctx context.Context, masterID int, duplicateIDs []int) error {
+	if len(duplicateIDs) == 0 {
+		return nil
+	}
+
+	tx, err := db.connection.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var masterNodeID int
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(graph_node_id, 0) FROM candidates WHERE id = $1`, masterID).Scan(&masterNodeID)
+	if err != nil {
+		return fmt.Errorf("get master candidate graph_node_id: %w", err)
+	}
+	if masterNodeID == 0 {
+		return fmt.Errorf("master candidate %d has no graph_node_id", masterID)
+	}
+
+	for _, dupID := range duplicateIDs {
+		if dupID == masterID {
+			continue
+		}
+
+		var dupNodeID int
+		err := tx.QueryRowContext(ctx, `SELECT COALESCE(graph_node_id, 0) FROM candidates WHERE id = $1`, dupID).Scan(&dupNodeID)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("get duplicate candidate %d graph_node_id: %w", dupID, err)
+		}
+
+		if dupNodeID > 0 {
+			// Transfer outgoing edges (source_node_id = dupNodeID -> masterNodeID)
+			_, err = tx.ExecContext(ctx, `
+				UPDATE graph_edges ge
+				SET source_node_id = $1
+				WHERE ge.source_node_id = $2
+				  AND NOT EXISTS (
+				      SELECT 1 FROM graph_edges ge2
+				      WHERE ge2.source_node_id = $1
+				        AND ge2.target_node_id = ge.target_node_id
+				        AND ge2.edge_type = ge.edge_type
+				  )
+			`, masterNodeID, dupNodeID)
+			if err != nil {
+				return fmt.Errorf("transfer outgoing edges from node %d: %w", dupNodeID, err)
+			}
+			_, err = tx.ExecContext(ctx, `DELETE FROM graph_edges WHERE source_node_id = $1`, dupNodeID)
+			if err != nil {
+				return fmt.Errorf("delete conflicting outgoing edges from node %d: %w", dupNodeID, err)
+			}
+
+			// Transfer incoming edges (target_node_id = dupNodeID -> masterNodeID)
+			_, err = tx.ExecContext(ctx, `
+				UPDATE graph_edges ge
+				SET target_node_id = $1
+				WHERE ge.target_node_id = $2
+				  AND NOT EXISTS (
+				      SELECT 1 FROM graph_edges ge2
+				      WHERE ge2.target_node_id = $1
+				        AND ge2.source_node_id = ge.source_node_id
+				        AND ge2.edge_type = ge.edge_type
+				  )
+			`, masterNodeID, dupNodeID)
+			if err != nil {
+				return fmt.Errorf("transfer incoming edges to node %d: %w", dupNodeID, err)
+			}
+			_, err = tx.ExecContext(ctx, `DELETE FROM graph_edges WHERE target_node_id = $1`, dupNodeID)
+			if err != nil {
+				return fmt.Errorf("delete conflicting incoming edges to node %d: %w", dupNodeID, err)
+			}
+		}
+
+		// Transfer CV files
+		_, err = tx.ExecContext(ctx, `UPDATE cv_files SET candidate_id = $1 WHERE candidate_id = $2`, masterID, dupID)
+		if err != nil {
+			return fmt.Errorf("transfer cv_files from candidate %d: %w", dupID, err)
+		}
+		if dupNodeID > 0 {
+			// Also re-link any cv_files referenced in node properties if candidate_id was null
+			_, err = tx.ExecContext(ctx, `
+				UPDATE cv_files SET candidate_id = $1
+				WHERE id IN (
+				    SELECT (properties->>'cv_id')::int
+				    FROM graph_nodes
+				    WHERE id = $2 AND properties->>'cv_id' ~ '^[0-9]+$'
+				) AND (candidate_id IS NULL OR candidate_id = $3)
+			`, masterID, dupNodeID, dupID)
+			if err != nil {
+				return fmt.Errorf("transfer cv_files from node properties %d: %w", dupNodeID, err)
+			}
+		}
+
+		// Transfer interviews
+		_, err = tx.ExecContext(ctx, `UPDATE interviews SET candidate_id = $1 WHERE candidate_id = $2`, masterID, dupID)
+		if err != nil {
+			return fmt.Errorf("transfer interviews from candidate %d: %w", dupID, err)
+		}
+
+		// Transfer candidate_scores (history)
+		_, err = tx.ExecContext(ctx, `UPDATE candidate_scores SET candidate_id = $1 WHERE candidate_id = $2`, masterID, dupID)
+		if err != nil {
+			return fmt.Errorf("transfer candidate_scores from candidate %d: %w", dupID, err)
+		}
+
+		// Delete duplicate candidate (will CASCADE delete remaining references if any)
+		_, err = tx.ExecContext(ctx, `DELETE FROM candidates WHERE id = $1`, dupID)
+		if err != nil {
+			return fmt.Errorf("delete candidate %d: %w", dupID, err)
+		}
+
+		// Delete duplicate graph node (will CASCADE delete community members, etc.)
+		if dupNodeID > 0 {
+			_, err = tx.ExecContext(ctx, `DELETE FROM graph_nodes WHERE id = $1`, dupNodeID)
+			if err != nil {
+				return fmt.Errorf("delete graph node %d: %w", dupNodeID, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit merge transaction: %w", err)
+	}
+
+	// Resync search vector and experience/skills fields on master candidate outside tx
+	_ = db.SyncCandidateTextFields(ctx, masterID, masterNodeID)
+	return nil
+}

@@ -21,103 +21,71 @@
     "host": "cv-search-production.up.railway.app",
     "basePath": "/api",
     "paths": {
-        "/candidates": {
+        "/candidates/duplicates": {
             "get": {
-                "description": "Returns a paginated list of candidates with interview count and latest outcome",
-                "produces": ["application/json"],
-                "tags": ["candidates"],
-                "summary": "List candidates",
-                "parameters": [
-                    {"type": "integer", "default": 50, "description": "Max results to return", "name": "limit", "in": "query"},
-                    {"type": "integer", "default": 0, "description": "Offset for pagination", "name": "offset", "in": "query"}
+                "description": "Returns groups of candidates sharing the same normalized name along with enriched profile data and a suggested master candidate ID for deduplication review.",
+                "produces": [
+                    "application/json"
                 ],
+                "tags": [
+                    "candidates"
+                ],
+                "summary": "Get duplicate candidate groups",
                 "responses": {
-                    "200": {"description": "OK", "schema": {"$ref": "#/definitions/api.ListCandidatesResponse"}},
-                    "500": {"description": "Internal Server Error", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
                 }
             }
         },
-        "/candidates/{id}": {
-            "get": {
-                "description": "Returns full candidate profile including all interview records",
-                "produces": ["application/json"],
-                "tags": ["candidates"],
-                "summary": "Get candidate detail",
-                "parameters": [
-                    {"type": "integer", "description": "Candidate ID", "name": "id", "in": "path", "required": true}
-                ],
-                "responses": {
-                    "200": {"description": "OK", "schema": {"$ref": "#/definitions/storage.CandidateDetail"}},
-                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
-                    "404": {"description": "Not Found", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
-                }
-            }
-        },
-        "/candidates/{id}/similar": {
-            "get": {
-                "description": "Returns candidates whose embedding vector is closest to the given candidate's vector. Requires the candidate to have been embedded via a CV upload.",
-                "produces": ["application/json"],
-                "tags": ["candidates"],
-                "summary": "Find similar candidates",
-                "parameters": [
-                    {"type": "integer", "description": "Candidate ID", "name": "id", "in": "path", "required": true},
-                    {"type": "integer", "default": 5, "description": "Number of similar candidates to return (1-20)", "name": "top_k", "in": "query"}
-                ],
-                "responses": {
-                    "200": {"description": "OK", "schema": {"$ref": "#/definitions/api.SimilarCandidatesResponse"}},
-                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
-                    "500": {"description": "Internal Server Error", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
-                }
-            }
-        },
-        "/candidates/{id}/interviews": {
+        "/candidates/merge": {
             "post": {
-                "description": "Adds a new interview record for a candidate and queues an embedding re-generation",
-                "consumes": ["application/json"],
-                "produces": ["application/json"],
-                "tags": ["candidates"],
-                "summary": "Create interview",
+                "description": "Atomically merges duplicate candidates and their graph relationships (skills, companies, education, CV files, interviews, scores) into a master candidate, then deletes the duplicate records.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "candidates"
+                ],
+                "summary": "Merge duplicate candidates",
                 "parameters": [
-                    {"type": "integer", "description": "Candidate ID", "name": "id", "in": "path", "required": true},
-                    {"description": "Interview data", "name": "request", "in": "body", "required": true, "schema": {"$ref": "#/definitions/api.InterviewRequest"}}
+                    {
+                        "description": "Merge request containing master_candidate_id and duplicate_candidate_ids",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.mergeCandidatesRequest"
+                        }
+                    }
                 ],
                 "responses": {
-                    "201": {"description": "Created", "schema": {"type": "object", "additionalProperties": true}},
-                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
-                    "500": {"description": "Internal Server Error", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
-                }
-            }
-        },
-        "/candidates/{id}/interviews/{iid}": {
-            "put": {
-                "description": "Updates an existing interview record and queues an embedding re-generation",
-                "consumes": ["application/json"],
-                "produces": ["application/json"],
-                "tags": ["candidates"],
-                "summary": "Update interview",
-                "parameters": [
-                    {"type": "integer", "description": "Candidate ID", "name": "id", "in": "path", "required": true},
-                    {"type": "integer", "description": "Interview ID", "name": "iid", "in": "path", "required": true},
-                    {"description": "Updated interview data", "name": "request", "in": "body", "required": true, "schema": {"$ref": "#/definitions/api.InterviewRequest"}}
-                ],
-                "responses": {
-                    "200": {"description": "OK", "schema": {"type": "object", "additionalProperties": true}},
-                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
-                    "404": {"description": "Not Found", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
-                }
-            },
-            "delete": {
-                "description": "Deletes an interview record and queues an embedding re-generation",
-                "tags": ["candidates"],
-                "summary": "Delete interview",
-                "parameters": [
-                    {"type": "integer", "description": "Candidate ID", "name": "id", "in": "path", "required": true},
-                    {"type": "integer", "description": "Interview ID", "name": "iid", "in": "path", "required": true}
-                ],
-                "responses": {
-                    "204": {"description": "No Content"},
-                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
-                    "404": {"description": "Not Found", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request payload",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to merge candidates",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
                 }
             }
         },
@@ -162,7 +130,7 @@
         },
         "/cv/bulk-upload": {
             "post": {
-                "description": "Upload multiple CV files at once (max 10 files, 1 MB each, 10 MB total)",
+                "description": "Upload multiple CV files at once (max configurable via MAX_BULK_FILE_COUNT)",
                 "consumes": [
                     "multipart/form-data"
                 ],
@@ -540,35 +508,6 @@
                 }
             }
         },
-        "/search/popular-queries": {
-            "get": {
-                "description": "Returns a list of ready-made search queries derived from the most common skills and seniority levels in the knowledge graph. Cached in-memory for 5 minutes.",
-                "produces": ["application/json"],
-                "tags": ["search"],
-                "summary": "Get popular search queries",
-                "responses": {
-                    "200": {"description": "OK", "schema": {"type": "array", "items": {"type": "string"}}},
-                    "500": {"description": "Internal Server Error", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
-                }
-            }
-        },
-        "/search/suggest": {
-            "get": {
-                "description": "Returns autocomplete suggestions based on a prefix. Searches skill names, company names and current positions in the knowledge graph.",
-                "produces": ["application/json"],
-                "tags": ["search"],
-                "summary": "Autocomplete search suggestions",
-                "parameters": [
-                    {"type": "string", "description": "Search prefix (min 1 char)", "name": "q", "in": "query", "required": true},
-                    {"type": "integer", "default": 8, "description": "Max results (1-20)", "name": "limit", "in": "query"}
-                ],
-                "responses": {
-                    "200": {"description": "OK", "schema": {"type": "array", "items": {"$ref": "#/definitions/storage.SuggestionResult"}}},
-                    "400": {"description": "Bad Request", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
-                    "500": {"description": "Internal Server Error", "schema": {"type": "object", "additionalProperties": {"type": "string"}}}
-                }
-            }
-        },
         "/search/hybrid": {
             "post": {
                 "description": "Search candidates using multi-source retrieval with fusion and pure LLM reranking",
@@ -630,18 +569,15 @@
                     "type": "number"
                 },
                 "communities": {
-                    "description": "All matching communities",
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
                 },
                 "community": {
-                    "description": "Primary community",
                     "type": "string"
                 },
                 "community_scores": {
-                    "description": "Score for each community",
                     "type": "object",
                     "additionalProperties": {
                         "type": "number",
@@ -654,6 +590,12 @@
                         "$ref": "#/definitions/graphrag.CompanyNode"
                     }
                 },
+                "computed_community_id": {
+                    "type": "string"
+                },
+                "computed_community_summary": {
+                    "type": "string"
+                },
                 "current_position": {
                     "type": "string"
                 },
@@ -662,6 +604,15 @@
                 },
                 "graph_score": {
                     "type": "number"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "interviews": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.InterviewSummaryResponse"
+                    }
                 },
                 "llm_reasoning": {
                     "type": "string"
@@ -753,6 +704,43 @@
                     "type": "string"
                 },
                 "total_found": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.InterviewSummaryResponse": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer"
+                },
+                "interview_date": {
+                    "type": "string"
+                },
+                "interview_type": {
+                    "type": "string"
+                },
+                "interviewer_name": {
+                    "type": "string"
+                },
+                "outcome": {
+                    "type": "string"
+                },
+                "team": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.mergeCandidatesRequest": {
+            "type": "object",
+            "properties": {
+                "duplicate_candidate_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "master_candidate_id": {
                     "type": "integer"
                 }
             }
@@ -868,95 +856,6 @@
                         "type": "string"
                     }
                 }
-            }
-        },
-        "api.InterviewRequest": {
-            "type": "object",
-            "required": ["interview_date"],
-            "properties": {
-                "interview_date": {"type": "string", "description": "Required. Format YYYY-MM-DD"},
-                "team": {"type": "string"},
-                "interviewer_name": {"type": "string"},
-                "interview_type": {"type": "string", "description": "One of: technical, hr, case_study, other"},
-                "notes": {"type": "string"},
-                "outcome": {"type": "string", "description": "One of: passed, failed, pending"}
-            }
-        },
-        "api.ListCandidatesResponse": {
-            "type": "object",
-            "properties": {
-                "candidates": {"type": "array", "items": {"$ref": "#/definitions/storage.CandidateListItem"}},
-                "total": {"type": "integer"},
-                "limit": {"type": "integer"},
-                "offset": {"type": "integer"}
-            }
-        },
-        "storage.Interview": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "integer"},
-                "candidate_id": {"type": "integer"},
-                "interview_date": {"type": "string"},
-                "team": {"type": "string"},
-                "interviewer_name": {"type": "string"},
-                "interview_type": {"type": "string", "description": "technical, hr, case_study, other"},
-                "notes": {"type": "string"},
-                "outcome": {"type": "string", "description": "passed, failed, pending"},
-                "created_at": {"type": "string"},
-                "updated_at": {"type": "string"}
-            }
-        },
-        "storage.CandidateDetail": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "integer"},
-                "name": {"type": "string"},
-                "email": {"type": "string"},
-                "phone": {"type": "string"},
-                "location": {"type": "string"},
-                "graph_node_id": {"type": "integer"},
-                "current_position": {"type": "string"},
-                "seniority": {"type": "string"},
-                "interviews": {"type": "array", "items": {"$ref": "#/definitions/storage.Interview"}},
-                "created_at": {"type": "string"}
-            }
-        },
-        "storage.CandidateListItem": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "integer"},
-                "name": {"type": "string"},
-                "current_position": {"type": "string"},
-                "seniority": {"type": "string"},
-                "interview_count": {"type": "integer"},
-                "latest_outcome": {"type": "string"},
-                "created_at": {"type": "string"}
-            }
-        },
-        "storage.SuggestionResult": {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string"},
-                "type": {"type": "string", "description": "One of: skill, company, position"}
-            }
-        },
-        "storage.SimilarCandidate": {
-            "type": "object",
-            "properties": {
-                "candidate_id": {"type": "integer"},
-                "name": {"type": "string"},
-                "current_position": {"type": "string"},
-                "seniority": {"type": "string"},
-                "top_skills": {"type": "array", "items": {"type": "string"}},
-                "similarity": {"type": "number", "description": "Cosine similarity score (0-1)"}
-            }
-        },
-        "api.SimilarCandidatesResponse": {
-            "type": "object",
-            "properties": {
-                "source_candidate_id": {"type": "integer"},
-                "top_k": {"type": "integer"},
-                "similar": {"type": "array", "items": {"$ref": "#/definitions/storage.SimilarCandidate"}}
             }
         }
     }
