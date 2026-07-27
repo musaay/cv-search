@@ -253,15 +253,26 @@ func (g *GraphBuilder) BuildFromLLMExtraction(ctx context.Context, cvID int, ext
 						edgeType = "WORKS_AT"
 					}
 
+					properties := map[string]interface{}{
+						"position": company.Position,
+					}
+					if company.StartYear != nil {
+						properties["start_year"] = company.StartYear
+					}
+					if company.EndYear != nil {
+						properties["end_year"] = company.EndYear
+					}
+					if company.DurationYears != nil {
+						properties["duration_years"] = company.DurationYears
+					}
+
 					relationships = append(relationships, Relationship{
 						SourceType: "person",
 						SourceID:   personID,
 						TargetType: "company",
 						TargetID:   companyID,
 						EdgeType:   edgeType,
-						Properties: map[string]interface{}{
-							"position": company.Position,
-						},
+						Properties: properties,
 					})
 				}
 			}
@@ -305,6 +316,18 @@ func (g *GraphBuilder) BuildFromLLMExtraction(ctx context.Context, cvID int, ext
 	// Create all nodes
 	if err := g.CreateNodes(ctx, entities); err != nil {
 		return fmt.Errorf("failed to create nodes: %w", err)
+	}
+
+	// Delete existing edges for this person before inserting new ones
+	personID := fmt.Sprintf("person_%d", cvID)
+	var personDBID int
+	err := g.db.QueryRowContext(ctx, `
+		SELECT id FROM graph_nodes WHERE node_type = 'person' AND node_id = $1
+	`, personID).Scan(&personDBID)
+	if err == nil {
+		_, _ = g.db.ExecContext(ctx, `
+			DELETE FROM graph_edges WHERE source_node_id = $1
+		`, personDBID)
 	}
 
 	// Create all edges

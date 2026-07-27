@@ -851,6 +851,15 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 				if isCurr, ok := edgeProps["is_current"].(bool); ok {
 					company.IsCurrent = isCurr
 				}
+				if start, ok := edgeProps["start_year"]; ok {
+					company.StartYear = start
+				}
+				if end, ok := edgeProps["end_year"]; ok {
+					company.EndYear = end
+				}
+				if duration, ok := edgeProps["duration_years"]; ok {
+					company.DurationYears = duration
+				}
 			}
 			// WORKS_AT always means current employer regardless of stored props
 			if edgeType == "WORKS_AT" {
