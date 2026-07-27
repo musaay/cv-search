@@ -155,7 +155,11 @@ func (a *API) ListCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 		offset = (page - 1) * limit
 	}
 
-	candidates, total, err := a.db.ListCandidates(r.Context(), limit, offset)
+	search := r.URL.Query().Get("search")
+	sort := r.URL.Query().Get("sort")
+	direction := r.URL.Query().Get("direction")
+
+	candidates, total, err := a.db.ListCandidates(r.Context(), limit, offset, search, sort, direction)
 	if err != nil {
 		log.Printf("[CandidateHandler] ListCandidates failed: %v", err)
 		http.Error(w, "failed to list candidates", http.StatusInternalServerError)
