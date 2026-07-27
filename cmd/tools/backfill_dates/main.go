@@ -28,10 +28,9 @@ var (
 )
 
 func main() {
-	// Load .env
-	err := godotenv.Load("/Users/admin/Desktop/projects/cv-search/.env")
-	if err != nil {
-		log.Fatalf("Error loading .env file: %v", err)
+	// Load .env file if present
+	if err := godotenv.Load(); err != nil {
+		log.Println("Warning: .env file not found, using environment variables")
 	}
 
 	dbURL := os.Getenv("DATABASE_URL")
