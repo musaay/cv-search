@@ -250,7 +250,7 @@ func (q *GraphQuerier) buildQuery(criteria *SearchCriteria) (string, []interface
 		baseQuery += " AND " + strings.Join(conditions, " AND ")
 	}
 
-	baseQuery += " LIMIT 50" // Safety limit
+	baseQuery += " LIMIT 200" // Increased from 50 to capture more candidates for broad queries
 
 	return baseQuery, args
 }
