@@ -126,10 +126,25 @@ func DefaultHybridConfig() HybridSearchConfig {
 func (h *HybridSearchEngine) Search(ctx context.Context, query string, config HybridSearchConfig) ([]FusedCandidate, error) {
 	log.Printf("[HybridSearch] Starting search for: %s", query)
 
+	// Step 0: Synchronous LLM Criteria Extraction (for Query Expansion)
+	var searchCriteria *SearchCriteria
+	var err error
+	analyzer := NewQueryAnalyzer(h.llm)
+	searchCriteria, err = analyzer.AnalyzeQuery(ctx, query)
+	if err != nil {
+		log.Printf("[HybridSearch] Graph criteria extraction failed: %v", err)
+	}
+
+	searchString := query
+	if searchCriteria != nil && searchCriteria.ExpandedQuery != "" {
+		searchString = query + " " + searchCriteria.ExpandedQuery
+		log.Printf("[HybridSearch] Query expanded to: %s", searchString)
+	}
+
 	// Semantic cache: if a semantically identical query ran recently, return immediately (<5ms)
 	var queryEmbedding []float32
 	var embErr error
-	queryEmbedding, embErr = h.embeddingService.GenerateEmbedding(ctx, query)
+	queryEmbedding, embErr = h.embeddingService.GenerateEmbedding(ctx, searchString)
 	if embErr == nil && !h.disableCache {
 		if cached, cachedQuery, found := h.semanticCache.Get(queryEmbedding); found {
 			log.Printf("[HybridSearch] Semantic cache HIT (similar to: %q) → %d cached results", cachedQuery, len(cached))
@@ -155,7 +170,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 
 	// BM25 search
 	go func() {
-		results, err := h.bm25Searcher.Search(ctx, query, config.TopK)
+		results, err := h.bm25Searcher.Search(ctx, searchString, config.TopK)
 		if err != nil {
 			errChan <- fmt.Errorf("bm25 failed: %w", err)
 			return
@@ -163,7 +178,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		bm25ResultsChan <- results
 	}()
 
-	// Vector search — reuse the embedding already generated for semantic cache (saves ~2s API call)
+	// Vector search — reuse the embedding already generated for semantic cache
 	go func() {
 		var personIDs []string
 		var similarities []float64
@@ -171,7 +186,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		if queryEmbedding != nil {
 			personIDs, similarities, err = h.embeddingService.SimilaritySearchByEmbedding(ctx, queryEmbedding, config.TopK)
 		} else {
-			personIDs, similarities, err = h.embeddingService.SimilaritySearch(ctx, query, config.TopK)
+			personIDs, similarities, err = h.embeddingService.SimilaritySearch(ctx, searchString, config.TopK)
 		}
 		if err != nil {
 			errChan <- fmt.Errorf("vector failed: %w", err)
@@ -187,29 +202,26 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		vectorResultsChan <- results
 	}()
 
-	// Graph search (needs criteria extraction first; sends criteria alongside results for post-fusion filtering)
+	// Graph search
 	go func() {
-		analyzer := NewQueryAnalyzer(h.llm)
-		criteria, err := analyzer.AnalyzeQuery(ctx, query)
-		if err != nil {
-			log.Printf("[HybridSearch] Graph search skipped (criteria extraction failed): %v", err)
+		if searchCriteria == nil {
+			log.Printf("[HybridSearch] Graph search skipped (no criteria extracted)")
 			graphResultsChan <- graphSearchResult{criteria: &SearchCriteria{}, results: []CandidateResult{}}
 			return
 		}
 
-		results, err := h.graphQuerier.QueryGraph(ctx, criteria)
+		results, err := h.graphQuerier.QueryGraph(ctx, searchCriteria)
 		if err != nil {
 			errChan <- fmt.Errorf("graph failed: %w", err)
 			return
 		}
-		graphResultsChan <- graphSearchResult{criteria: criteria, results: results}
+		graphResultsChan <- graphSearchResult{criteria: searchCriteria, results: results}
 	}()
 
 	// Wait for all results
 	var bm25Results []BM25Result
 	var vectorResults []VectorSearchResult
 	var graphResults []CandidateResult
-	var searchCriteria *SearchCriteria
 
 	for i := 0; i < 3; i++ {
 		select {
@@ -266,56 +278,48 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	}
 
 	// =====================================================================================================
-	// POST-FILTERING: Strict Experience and Seniority Checks
-	// 
-	// NOTE(Future Reference): This strict filter aggressively drops candidates that do not match the exact 
-	// seniority or experience constraints extracted by the LLM (Query Analyzer).
-	// 
-	// Potential Side Effects to watch out for:
-	// 1. LLM Hallucination Risk: If the LLM incorrectly classifies a query as "Seniority: Junior" 
-	//    (e.g., user says "we don't want juniors"), this filter will erroneously drop all Senior candidates.
-	// 2. Strict Boundary Drop: A candidate with 4.8 years (rounded to 4) will be completely dropped 
-	//    if the query specifically asked for "MinExperience: 5", removing the semantic "fuzziness" of the search.
-	// 
-	// Mitigation: We only drop candidates if their DB field is strictly set and mismatches. If their 
-	// Seniority is empty/null in the DB, we safely keep them in the pool to avoid losing valid data.
+	// POST-FILTERING: Soft Penalty for Experience and Seniority Mismatches
+	//
+	// Following Microsoft GraphRAG philosophy, we avoid dropping candidates with strict boolean filters.
+	// Instead, if a candidate's seniority or experience does not match the LLM-extracted constraints,
+	// we apply a severe penalty (FusionScore *= 0.1) to drop their rank drastically.
+	// However, if the candidate belongs to a highly relevant semantic community (e.g. Lead Developer),
+	// the Community Score Boost (applied later) will act as a life-saver and push them back up the ranks.
+	// This preserves both search precision and semantic flexibility.
 	// =====================================================================================================
 	if searchCriteria != nil {
-		expFiltered := make([]FusedCandidate, 0, len(fusedCandidates))
-		filteredCount := 0
-		for _, c := range fusedCandidates {
-			keep := true
-			// 1. Strict Seniority check
+		penalizedCount := 0
+		for i := range fusedCandidates {
+			penalty := 1.0
+			c := fusedCandidates[i]
+			
+			// 1. Seniority mismatch penalty
 			if searchCriteria.Seniority != "" && c.Seniority != "" {
 				if !strings.EqualFold(c.Seniority, searchCriteria.Seniority) {
-					// We only drop if both have seniority set and they strictly mismatch
-					keep = false
+					penalty *= 0.1
 				}
 			}
-			// 2. Strict Min Experience check
+			// 2. Min Experience penalty
 			if searchCriteria.MinExperience != nil && *searchCriteria.MinExperience > 0 {
 				if c.TotalExperienceYears < *searchCriteria.MinExperience {
-					keep = false
+					penalty *= 0.1
 				}
 			}
-			// 3. Strict Max Experience check
+			// 3. Max Experience penalty
 			if searchCriteria.MaxExperience != nil && *searchCriteria.MaxExperience > 0 {
 				if c.TotalExperienceYears > *searchCriteria.MaxExperience {
-					keep = false
+					penalty *= 0.1
 				}
 			}
 
-			if keep {
-				expFiltered = append(expFiltered, c)
-			} else {
-				filteredCount++
+			if penalty < 1.0 {
+				fusedCandidates[i].FusionScore *= penalty
+				penalizedCount++
 			}
 		}
 
-		if filteredCount > 0 {
-			log.Printf("[HybridSearch] Experience/Seniority post-filter: %d → %d candidates (dropped %d)",
-				len(fusedCandidates), len(expFiltered), filteredCount)
-			fusedCandidates = expFiltered
+		if penalizedCount > 0 {
+			log.Printf("[HybridSearch] Experience/Seniority soft penalty applied to %d candidates", penalizedCount)
 		}
 	}
 

@@ -57,6 +57,8 @@ type SearchCriteria struct {
 	MinExperience *int     `json:"min_experience"` // Minimum years
 	MaxExperience *int     `json:"max_experience"` // Maximum years
 	Location      []string `json:"location"`       // Cities/countries
+	ExpandedQuery string   `json:"expanded_query"` // TR/EN translations and synonyms for better BM25/Vector matching
+
 
 	// Legacy fields kept for backward compatibility
 	RequiredSkills  []string               `json:"required_skills,omitempty"`

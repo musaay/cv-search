@@ -34,7 +34,8 @@ Extract and return ONLY valid JSON with this structure:
   "education": ["institution names or degree types"],
   "min_experience": null,
   "max_experience": null,
-  "location": ["city or country names"]
+  "location": ["city or country names"],
+  "expanded_query": "translated synonyms"
 }
 
 Rules:
@@ -44,6 +45,7 @@ Rules:
 - For experience: "5+ years" → min_experience: 5, "3-5 years" → min_experience: 3, max_experience: 5
 - Return empty arrays for missing criteria, not null
 - If no specific seniority mentioned, leave it empty string ""
+- IMPORTANT Cross-Lingual Rule: In 'expanded_query', provide English and Turkish translations/synonyms of the requested job title and core skills as a single space-separated string (e.g. if query is "Senior Java Developer", expanded_query should be "Kıdemli Java Yazılım Mühendisi Teknik Lider").
 
 Now analyze this query and return ONLY the JSON:`, query)
 
