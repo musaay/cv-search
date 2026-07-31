@@ -265,6 +265,60 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		}
 	}
 
+	// =====================================================================================================
+	// POST-FILTERING: Strict Experience and Seniority Checks
+	// 
+	// NOTE(Future Reference): This strict filter aggressively drops candidates that do not match the exact 
+	// seniority or experience constraints extracted by the LLM (Query Analyzer).
+	// 
+	// Potential Side Effects to watch out for:
+	// 1. LLM Hallucination Risk: If the LLM incorrectly classifies a query as "Seniority: Junior" 
+	//    (e.g., user says "we don't want juniors"), this filter will erroneously drop all Senior candidates.
+	// 2. Strict Boundary Drop: A candidate with 4.8 years (rounded to 4) will be completely dropped 
+	//    if the query specifically asked for "MinExperience: 5", removing the semantic "fuzziness" of the search.
+	// 
+	// Mitigation: We only drop candidates if their DB field is strictly set and mismatches. If their 
+	// Seniority is empty/null in the DB, we safely keep them in the pool to avoid losing valid data.
+	// =====================================================================================================
+	if searchCriteria != nil {
+		expFiltered := make([]FusedCandidate, 0, len(fusedCandidates))
+		filteredCount := 0
+		for _, c := range fusedCandidates {
+			keep := true
+			// 1. Strict Seniority check
+			if searchCriteria.Seniority != "" && c.Seniority != "" {
+				if !strings.EqualFold(c.Seniority, searchCriteria.Seniority) {
+					// We only drop if both have seniority set and they strictly mismatch
+					keep = false
+				}
+			}
+			// 2. Strict Min Experience check
+			if searchCriteria.MinExperience != nil && *searchCriteria.MinExperience > 0 {
+				if c.TotalExperienceYears < *searchCriteria.MinExperience {
+					keep = false
+				}
+			}
+			// 3. Strict Max Experience check
+			if searchCriteria.MaxExperience != nil && *searchCriteria.MaxExperience > 0 {
+				if c.TotalExperienceYears > *searchCriteria.MaxExperience {
+					keep = false
+				}
+			}
+
+			if keep {
+				expFiltered = append(expFiltered, c)
+			} else {
+				filteredCount++
+			}
+		}
+
+		if filteredCount > 0 {
+			log.Printf("[HybridSearch] Experience/Seniority post-filter: %d → %d candidates (dropped %d)",
+				len(fusedCandidates), len(expFiltered), filteredCount)
+			fusedCandidates = expFiltered
+		}
+	}
+
 	// Step 2.6: Fetch global community context for this query (for LLM scoring context)
 	var queryCommunityContext []string
 	if queryEmbedding != nil {
