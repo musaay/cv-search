@@ -43,6 +43,10 @@ type Service struct {
 	// model's published RPM instead of bursting and reacting to 429s after
 	// the fact. nil for non-Groq providers.
 	limiter *rate.Limiter
+
+	// fallback is an optional secondary LLM provider to use if this primary
+	// provider fails (e.g., rate limits, network timeouts).
+	fallback *Service
 }
 
 type CVExtraction struct {
@@ -110,6 +114,13 @@ func NewService(provider, apiKey, model string) *Service {
 	return s
 }
 
+// WithFallback sets an optional secondary LLM service that will be called if
+// this primary service returns an error. It returns the primary service for chaining.
+func (s *Service) WithFallback(fallback *Service) *Service {
+	s.fallback = fallback
+	return s
+}
+
 // Generate sends a prompt to LLM and returns the response (for GraphRAG queries)
 func (s *Service) Generate(prompt string) (string, error) {
 	if s.provider == ProviderNone {
@@ -130,6 +141,11 @@ func (s *Service) Generate(prompt string) (string, error) {
 		response, err = s.callGroq(prompt, interactiveMaxWait)
 	default:
 		return "", fmt.Errorf("unknown provider: %s", s.provider)
+	}
+
+	if err != nil && s.fallback != nil {
+		log.Printf("[LLM] Primary provider (%s) failed: %v. Falling back to %s", s.provider, err, s.fallback.provider)
+		return s.fallback.Generate(prompt)
 	}
 
 	return response, err
@@ -156,6 +172,11 @@ func (s *Service) ExtractEntities(cvText string) (*CVExtraction, error) {
 		response, err = s.callGroq(prompt, backgroundMaxWait)
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", s.provider)
+	}
+
+	if err != nil && s.fallback != nil {
+		log.Printf("[LLM] Primary provider (%s) failed for CV extraction: %v. Falling back to %s", s.provider, err, s.fallback.provider)
+		return s.fallback.ExtractEntities(cvText)
 	}
 
 	if err != nil {

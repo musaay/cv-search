@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -120,6 +122,23 @@ func NewAPI(db *storage.DB, cfg *config.Config) *API {
 
 	if cfg.LLMProvider != "" && cfg.LLMProvider != "none" && cfg.LLMAPIKey != "" {
 		llmSvc = llm.NewService(cfg.LLMProvider, cfg.LLMAPIKey, cfg.LLMModel)
+
+		// Setup Bidirectional Fallback (Groq <-> OpenAI) if both keys are present
+		openaiKey := cfg.OpenAIAPIKey
+		hasValidOpenAI := openaiKey != "" && openaiKey != "your_openai_api_key_here"
+		
+		groqKey := os.Getenv("GROQ_API_KEY")
+		hasValidGroq := groqKey != "" && groqKey != "your_groq_api_key_here"
+
+		if cfg.LLMProvider == "groq" && hasValidOpenAI {
+			fallbackSvc := llm.NewService("openai", openaiKey, "gpt-4o-mini") // Default lightweight fallback
+			llmSvc.WithFallback(fallbackSvc)
+			log.Println("[LLM] Two-way fallback enabled: Primary(Groq) -> Fallback(OpenAI)")
+		} else if cfg.LLMProvider == "openai" && hasValidGroq {
+			fallbackSvc := llm.NewService("groq", groqKey, "llama-3.3-70b-versatile")
+			llmSvc.WithFallback(fallbackSvc)
+			log.Println("[LLM] Two-way fallback enabled: Primary(OpenAI) -> Fallback(Groq)")
+		}
 	}
 
 	// Initialize graph builder
