@@ -477,34 +477,36 @@ func (db *DB) GetCandidateDetail(ctx context.Context, candidateID int) (*Candida
 		c.GraphNodeID = &id
 	}
 
-	// Try to fill empty email, phone, location from parsed CV text & entities if they are empty
-	if c.Email == "" || c.Phone == "" || c.Location == "" {
-		var cvFileID int
-		var parsedText string
-		err := db.connection.QueryRowContext(ctx, `
-			SELECT id, parsed_text FROM cv_files WHERE candidate_id = $1 LIMIT 1
-		`, candidateID).Scan(&cvFileID, &parsedText)
-		if err == nil {
-			if c.Email == "" {
-				emailMatch := regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`).FindString(parsedText)
-				if emailMatch != "" {
-					c.Email = emailMatch
-				}
+	// Always try to fetch the parsed CV text
+	var cvFileID int
+	var parsedText string
+	errCV := db.connection.QueryRowContext(ctx, `
+		SELECT id, parsed_text FROM cv_files WHERE candidate_id = $1 LIMIT 1
+	`, candidateID).Scan(&cvFileID, &parsedText)
+	
+	if errCV == nil {
+		c.OriginalCVText = parsedText
+		
+		// Try to fill empty email, phone, location from parsed CV text & entities if they are empty
+		if c.Email == "" {
+			emailMatch := regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`).FindString(parsedText)
+			if emailMatch != "" {
+				c.Email = emailMatch
 			}
-			if c.Phone == "" {
-				phoneMatch := regexp.MustCompile(`(?:(?:\+?90|0)\s*)?5\d{2}[-\s]?\d{3}[-\s]?\d{4}`).FindString(parsedText)
-				if phoneMatch != "" {
-					c.Phone = phoneMatch
-				}
+		}
+		if c.Phone == "" {
+			phoneMatch := regexp.MustCompile(`(?:(?:\+?90|0)\s*)?5\d{2}[-\s]?\d{3}[-\s]?\d{4}`).FindString(parsedText)
+			if phoneMatch != "" {
+				c.Phone = phoneMatch
 			}
-			if c.Location == "" {
-				var locVal string
-				errLoc := db.connection.QueryRowContext(ctx, `
-					SELECT entity_value FROM cv_entities WHERE cv_file_id = $1 AND entity_type = 'location' LIMIT 1
-				`, cvFileID).Scan(&locVal)
-				if errLoc == nil && locVal != "" {
-					c.Location = locVal
-				}
+		}
+		if c.Location == "" {
+			var locVal string
+			errLoc := db.connection.QueryRowContext(ctx, `
+				SELECT entity_value FROM cv_entities WHERE cv_file_id = $1 AND entity_type = 'location' LIMIT 1
+			`, cvFileID).Scan(&locVal)
+			if errLoc == nil && locVal != "" {
+				c.Location = locVal
 			}
 		}
 	}
@@ -1245,13 +1247,36 @@ type DuplicateCandidateItem struct {
 func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCandidateGroup, error) {
 	db.connection.ExecContext(ctx, "DEALLOCATE ALL")
 
+	// 1. Fetch all duplicate candidates in one query
 	query := `
-		SELECT LOWER(TRIM(name)) AS group_key
-		FROM candidates
-		WHERE name IS NOT NULL AND TRIM(name) <> '' AND graph_node_id IS NOT NULL
-		GROUP BY LOWER(TRIM(name))
-		HAVING COUNT(*) > 1
-		ORDER BY COUNT(*) DESC, group_key ASC
+		WITH duplicate_names AS (
+			SELECT LOWER(TRIM(name)) AS group_key
+			FROM candidates
+			WHERE name IS NOT NULL AND TRIM(name) <> '' AND graph_node_id IS NOT NULL
+			GROUP BY LOWER(TRIM(name))
+			HAVING COUNT(*) > 1
+		)
+		SELECT 
+			c.id,
+			COALESCE(c.graph_node_id, 0),
+			COALESCE(gn.node_id, ''),
+			c.name,
+			COALESCE(gn.properties->>'current_position', ''),
+			COALESCE(gn.properties->>'seniority', ''),
+			CASE 
+				WHEN gn.properties->>'total_experience_years' ~ '^[0-9]+(\.[0-9]+)?$' 
+				THEN (gn.properties->>'total_experience_years')::numeric 
+				ELSE 0 
+			END,
+			c.created_at,
+			d.group_key
+		FROM candidates c
+		JOIN duplicate_names d ON LOWER(TRIM(c.name)) = d.group_key
+		LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
+		WHERE c.graph_node_id IS NOT NULL
+		ORDER BY d.group_key ASC, 
+				 CASE WHEN gn.properties->>'total_experience_years' ~ '^[0-9]+(\.[0-9]+)?$' THEN (gn.properties->>'total_experience_years')::numeric ELSE 0 END DESC, 
+				 c.created_at DESC
 	`
 	rows, err := db.connection.QueryContext(ctx, query)
 	if err != nil {
@@ -1259,29 +1284,151 @@ func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCand
 	}
 	defer rows.Close()
 
-	var groupKeys []string
+	var allItems []*DuplicateCandidateItem
+	var candidateIDs []interface{}
+	var graphNodeIDs []interface{}
+	groupMap := make(map[string][]*DuplicateCandidateItem)
+	idMap := make(map[int]*DuplicateCandidateItem) // candidateID -> item pointer
+	nodeToCandMap := make(map[int]*DuplicateCandidateItem) // graphNodeID -> item pointer
+	
+	// Pre-allocate placeholders
+	var candPlaceholders []string
+	var graphPlaceholders []string
+
 	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err == nil && key != "" {
-			groupKeys = append(groupKeys, key)
+		item := &DuplicateCandidateItem{}
+		var expFloat float64
+		var groupKey string
+		if err := rows.Scan(
+			&item.CandidateID, &item.GraphNodeID, &item.PersonNodeID, &item.Name,
+			&item.CurrentPosition, &item.Seniority, &expFloat, &item.CreatedAt,
+			&groupKey,
+		); err != nil {
+			continue
 		}
+		item.ExperienceYears = int(expFloat)
+		
+		allItems = append(allItems, item)
+		candidateIDs = append(candidateIDs, item.CandidateID)
+		candPlaceholders = append(candPlaceholders, fmt.Sprintf("$%d", len(candidateIDs)))
+		idMap[item.CandidateID] = item
+		
+		if item.GraphNodeID > 0 {
+			graphNodeIDs = append(graphNodeIDs, item.GraphNodeID)
+			graphPlaceholders = append(graphPlaceholders, fmt.Sprintf("$%d", len(graphNodeIDs)))
+			nodeToCandMap[item.GraphNodeID] = item
+		}
+		groupMap[groupKey] = append(groupMap[groupKey], item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	if len(groupKeys) == 0 {
+	if len(allItems) == 0 {
 		return []DuplicateCandidateGroup{}, nil
 	}
 
+	// 2. Fetch CV files for all duplicates
+	if len(candidateIDs) > 0 {
+		cvQuery := fmt.Sprintf(`
+			SELECT COALESCE(candidate_id, 0), filename
+			FROM cv_files
+			WHERE candidate_id IN (%s)
+			ORDER BY uploaded_at DESC
+		`, strings.Join(candPlaceholders, ","))
+		
+		cvRows, err := db.connection.QueryContext(ctx, cvQuery, candidateIDs...)
+		if err == nil {
+			defer cvRows.Close()
+			for cvRows.Next() {
+				var cid int
+				var fname string
+				if err := cvRows.Scan(&cid, &fname); err == nil && fname != "" {
+					if item, ok := idMap[cid]; ok {
+						item.CVFiles = append(item.CVFiles, fname)
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Fetch skills, companies, education for all duplicates via graph edges
+	if len(graphNodeIDs) > 0 {
+		edgeQuery := fmt.Sprintf(`
+			SELECT gn.id, ge.edge_type, s.properties->>'name'
+			FROM graph_nodes gn
+			JOIN graph_edges ge ON ge.source_node_id = gn.id
+			JOIN graph_nodes s  ON s.id = ge.target_node_id
+			WHERE gn.id IN (%s)
+			  AND ge.edge_type IN ('HAS_SKILL', 'WORKED_AT', 'WORKS_AT', 'STUDIED_AT', 'GRADUATED_FROM')
+		`, strings.Join(graphPlaceholders, ","))
+		
+		edgeRows, err := db.connection.QueryContext(ctx, edgeQuery, graphNodeIDs...)
+		if err == nil {
+			defer edgeRows.Close()
+			for edgeRows.Next() {
+				var gnID int
+				var edgeType, val string
+				if err := edgeRows.Scan(&gnID, &edgeType, &val); err == nil && val != "" {
+					if item, ok := nodeToCandMap[gnID]; ok {
+						switch edgeType {
+						case "HAS_SKILL":
+							if len(item.TopSkills) < 10 {
+								item.TopSkills = append(item.TopSkills, val)
+							}
+						case "WORKED_AT", "WORKS_AT":
+							if len(item.Companies) < 10 {
+								item.Companies = append(item.Companies, val)
+							}
+						case "STUDIED_AT", "GRADUATED_FROM":
+							if len(item.Education) < 10 {
+								item.Education = append(item.Education, val)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 4. Assemble the final groups
 	var groups []DuplicateCandidateGroup
-	for _, key := range groupKeys {
-		items, err := db.getCandidateItemsByNormalizedName(ctx, key)
-		if err != nil || len(items) <= 1 {
+	
+	// Create an ordered list of group keys based on count and then alphabetically
+	// Using a query to fetch the ordered keys
+	keyQuery := `
+		SELECT LOWER(TRIM(name)) AS group_key
+		FROM candidates
+		WHERE name IS NOT NULL AND TRIM(name) <> '' AND graph_node_id IS NOT NULL
+		GROUP BY LOWER(TRIM(name))
+		HAVING COUNT(*) > 1
+		ORDER BY COUNT(*) DESC, group_key ASC
+	`
+	keyRows, err := db.connection.QueryContext(ctx, keyQuery)
+	if err != nil {
+		return nil, err
+	}
+	defer keyRows.Close()
+	
+	var orderedKeys []string
+	for keyRows.Next() {
+		var key string
+		if err := keyRows.Scan(&key); err == nil && key != "" {
+			orderedKeys = append(orderedKeys, key)
+		}
+	}
+	
+	for _, key := range orderedKeys {
+		itemsPtrs, ok := groupMap[key]
+		if !ok || len(itemsPtrs) <= 1 {
 			continue
 		}
+		
+		var items []DuplicateCandidateItem
+		for _, ptr := range itemsPtrs {
+			items = append(items, *ptr)
+		}
 
-		// Suggested master ID is the one with highest experience years or latest created_at (first item after sorting)
 		suggestedMasterID := items[0].CandidateID
 		maxExp := -1
 		for _, item := range items {
@@ -1289,7 +1436,6 @@ func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCand
 				maxExp = item.ExperienceYears
 				suggestedMasterID = item.CandidateID
 			} else if item.ExperienceYears == maxExp && item.CandidateID < suggestedMasterID {
-				// tie breaker
 				suggestedMasterID = item.CandidateID
 			}
 		}
@@ -1302,146 +1448,6 @@ func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCand
 	}
 
 	return groups, nil
-}
-
-func (db *DB) getCandidateItemsByNormalizedName(ctx context.Context, groupKey string) ([]DuplicateCandidateItem, error) {
-	query := `
-		SELECT
-			c.id,
-			COALESCE(c.graph_node_id, 0),
-			COALESCE(gn.node_id, ''),
-			c.name,
-			COALESCE(gn.properties->>'current_position', ''),
-			COALESCE(gn.properties->>'seniority', ''),
-			CASE 
-				WHEN gn.properties->>'total_experience_years' ~ '^[0-9]+(\.[0-9]+)?$' 
-				THEN (gn.properties->>'total_experience_years')::numeric 
-				ELSE 0 
-			END,
-			c.created_at
-		FROM candidates c
-		LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
-		WHERE LOWER(TRIM(c.name)) = $1 AND c.graph_node_id IS NOT NULL
-		ORDER BY CASE WHEN gn.properties->>'total_experience_years' ~ '^[0-9]+(\.[0-9]+)?$' THEN (gn.properties->>'total_experience_years')::numeric ELSE 0 END DESC, c.created_at DESC
-	`
-	rows, err := db.connection.QueryContext(ctx, query, groupKey)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var items []DuplicateCandidateItem
-	var candidateIDs []int
-	var graphNodeIDs []int
-
-	for rows.Next() {
-		var item DuplicateCandidateItem
-		var expFloat float64
-		if err := rows.Scan(
-			&item.CandidateID, &item.GraphNodeID, &item.PersonNodeID, &item.Name,
-			&item.CurrentPosition, &item.Seniority, &expFloat, &item.CreatedAt,
-		); err != nil {
-			continue
-		}
-		item.ExperienceYears = int(expFloat)
-		items = append(items, item)
-		candidateIDs = append(candidateIDs, item.CandidateID)
-		if item.GraphNodeID > 0 {
-			graphNodeIDs = append(graphNodeIDs, item.GraphNodeID)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	if len(items) == 0 {
-		return items, nil
-	}
-
-	// Enrich items with skills, companies, education, cv_files
-	idMap := make(map[int]int) // candidateID -> index in items
-	for i, item := range items {
-		idMap[item.CandidateID] = i
-	}
-
-	// Fetch CV files
-	if len(candidateIDs) > 0 {
-		placeholders := make([]string, len(candidateIDs))
-		args := make([]interface{}, len(candidateIDs))
-		for i, id := range candidateIDs {
-			placeholders[i] = fmt.Sprintf("$%d", i+1)
-			args[i] = id
-		}
-		cvQuery := fmt.Sprintf(`
-			SELECT COALESCE(candidate_id, 0), filename
-			FROM cv_files
-			WHERE candidate_id IN (%s)
-			ORDER BY uploaded_at DESC
-		`, strings.Join(placeholders, ","))
-		cvRows, err := db.connection.QueryContext(ctx, cvQuery, args...)
-		if err == nil {
-			defer cvRows.Close()
-			for cvRows.Next() {
-				var cid int
-				var fname string
-				if err := cvRows.Scan(&cid, &fname); err == nil && fname != "" {
-					if idx, ok := idMap[cid]; ok {
-						items[idx].CVFiles = append(items[idx].CVFiles, fname)
-					}
-				}
-			}
-		}
-	}
-
-	// Fetch skills, companies, education via graph edges
-	if len(graphNodeIDs) > 0 {
-		placeholders := make([]string, len(graphNodeIDs))
-		args := make([]interface{}, len(graphNodeIDs))
-		for i, id := range graphNodeIDs {
-			placeholders[i] = fmt.Sprintf("$%d", i+1)
-			args[i] = id
-		}
-		edgeQuery := fmt.Sprintf(`
-			SELECT gn.id, ge.edge_type, s.properties->>'name'
-			FROM graph_nodes gn
-			JOIN graph_edges ge ON ge.source_node_id = gn.id
-			JOIN graph_nodes s  ON s.id = ge.target_node_id
-			WHERE gn.id IN (%s)
-			  AND ge.edge_type IN ('HAS_SKILL', 'WORKED_AT', 'WORKS_AT', 'STUDIED_AT', 'GRADUATED_FROM')
-		`, strings.Join(placeholders, ","))
-		edgeRows, err := db.connection.QueryContext(ctx, edgeQuery, args...)
-		if err == nil {
-			defer edgeRows.Close()
-			nodeToCandIdx := make(map[int]int)
-			for idx, item := range items {
-				nodeToCandIdx[item.GraphNodeID] = idx
-			}
-			for edgeRows.Next() {
-				var gnID int
-				var edgeType, val string
-				if err := edgeRows.Scan(&gnID, &edgeType, &val); err == nil && val != "" {
-					if idx, ok := nodeToCandIdx[gnID]; ok {
-						switch edgeType {
-						case "HAS_SKILL":
-							if len(items[idx].TopSkills) < 10 {
-								items[idx].TopSkills = append(items[idx].TopSkills, val)
-							}
-						case "WORKED_AT", "WORKS_AT":
-							if len(items[idx].Companies) < 10 {
-								items[idx].Companies = append(items[idx].Companies, val)
-							}
-						case "STUDIED_AT", "GRADUATED_FROM":
-							if len(items[idx].Education) < 10 {
-								items[idx].Education = append(items[idx].Education, val)
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return items, nil
 }
 
 // GetCandidateProfileDetails returns full enriched profile details for a single candidate.

@@ -52,6 +52,7 @@ type CandidateDetail struct {
 	CurrentPosition string      `json:"current_position,omitempty"` // from graph_nodes.properties
 	Seniority       string      `json:"seniority,omitempty"`        // from graph_nodes.properties
 	Interviews      []Interview `json:"interviews"`
+	OriginalCVText  string      `json:"original_cv_text,omitempty"`
 	CreatedAt       time.Time   `json:"created_at"`
 }
 

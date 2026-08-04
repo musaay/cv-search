@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS candidates (
 
 -- Indexes for candidates
 CREATE INDEX IF NOT EXISTS idx_candidates_name ON candidates(name);
+CREATE INDEX IF NOT EXISTS idx_candidates_lower_trim_name ON candidates(LOWER(TRIM(name)));
 CREATE INDEX IF NOT EXISTS idx_candidates_email ON candidates(email);
 CREATE INDEX IF NOT EXISTS idx_candidates_location ON candidates(location);
 CREATE INDEX IF NOT EXISTS idx_candidates_created_at ON candidates(created_at);
@@ -148,6 +149,7 @@ CREATE TABLE IF NOT EXISTS graph_edges (
 CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges(source_node_id);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges(target_node_id);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_type ON graph_edges(edge_type);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_composite ON graph_edges(source_node_id, edge_type, target_node_id);
 
 COMMENT ON TABLE graph_nodes IS 'Graph nodes for GraphRAG (person, skill, company, etc.)';
 COMMENT ON TABLE graph_edges IS 'Graph edges (has_skill, worked_at, etc.)';

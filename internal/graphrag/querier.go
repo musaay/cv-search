@@ -134,11 +134,12 @@ func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria)
 		}
 		result.TotalExperience = props["total_experience_years"]
 
-		// Fetch related nodes (skills, companies, education)
-		q.enrichCandidate(ctx, &result)
 		// MatchScore left at 0.0 — all scoring is handled by LLM in hybrid_search.go
 		results = append(results, result)
 	}
+
+	// Fetch related nodes (skills, companies, education) in batch
+	q.enrichCandidatesBatch(ctx, results)
 
 	// Sort by match score descending (all zeros currently, but preserves order stability)
 	sort.Slice(results, func(i, j int) bool {
@@ -257,108 +258,133 @@ func (q *GraphQuerier) buildQuery(criteria *SearchCriteria) (string, []interface
 	return baseQuery, args
 }
 
-func (q *GraphQuerier) enrichCandidate(ctx context.Context, result *CandidateResult) {
+func (q *GraphQuerier) enrichCandidatesBatch(ctx context.Context, results []CandidateResult) {
+	if len(results) == 0 {
+		return
+	}
+
+	// Create mapping from PersonID to result index for fast lookup
+	personIdxMap := make(map[string]int)
+	personIDs := make([]interface{}, len(results))
+	placeholders := make([]string, len(results))
+
+	for i, r := range results {
+		personIdxMap[r.PersonID] = i
+		personIDs[i] = r.PersonID
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+	}
+	inClause := strings.Join(placeholders, ",")
+
 	// Fetch skills
-	skillRows, err := q.db.QueryContext(ctx, `
-		SELECT s.node_id, s.properties
+	skillQuery := fmt.Sprintf(`
+		SELECT p.node_id, s.node_id, s.properties
 		FROM graph_nodes p
 		JOIN graph_edges e ON p.id = e.source_node_id
 		JOIN graph_nodes s ON e.target_node_id = s.id
-		WHERE p.node_id = $1
+		WHERE p.node_id IN (%s)
 		  AND e.edge_type = 'HAS_SKILL'
 		  AND s.node_type = 'skill'
-	`, result.PersonID)
+	`, inClause)
 
+	skillRows, err := q.db.QueryContext(ctx, skillQuery, personIDs...)
 	if err == nil {
 		defer skillRows.Close()
 		for skillRows.Next() {
-			var nodeID string
+			var personNodeID, skillNodeID string
 			var propsJSON []byte
-			if err := skillRows.Scan(&nodeID, &propsJSON); err == nil {
-				var props map[string]interface{}
-				if err := json.Unmarshal(propsJSON, &props); err == nil {
-					skill := SkillNode{
-						Name:        props["name"].(string),
-						Proficiency: props["proficiency"].(string),
+			if err := skillRows.Scan(&personNodeID, &skillNodeID, &propsJSON); err == nil {
+				if idx, ok := personIdxMap[personNodeID]; ok {
+					var props map[string]interface{}
+					if err := json.Unmarshal(propsJSON, &props); err == nil {
+						skill := SkillNode{
+							Name:        props["name"].(string),
+							Proficiency: props["proficiency"].(string),
+						}
+						results[idx].Skills = append(results[idx].Skills, skill)
 					}
-					result.Skills = append(result.Skills, skill)
 				}
 			}
 		}
 	}
 
 	// Fetch companies
-	companyRows, err := q.db.QueryContext(ctx, `
-		SELECT c.node_id, c.properties, e.properties, e.edge_type
+	companyQuery := fmt.Sprintf(`
+		SELECT p.node_id, c.node_id, c.properties, e.properties, e.edge_type
 		FROM graph_nodes p
 		JOIN graph_edges e ON p.id = e.source_node_id
 		JOIN graph_nodes c ON e.target_node_id = c.id
-		WHERE p.node_id = $1
+		WHERE p.node_id IN (%s)
 		  AND e.edge_type IN ('WORKS_AT', 'WORKED_AT')
 		  AND c.node_type = 'company'
-	`, result.PersonID)
+	`, inClause)
 
+	companyRows, err := q.db.QueryContext(ctx, companyQuery, personIDs...)
 	if err == nil {
 		defer companyRows.Close()
 		for companyRows.Next() {
-			var nodeID, edgeType string
+			var personNodeID, companyNodeID, edgeType string
 			var companyPropsJSON, edgePropsJSON []byte
-			if err := companyRows.Scan(&nodeID, &companyPropsJSON, &edgePropsJSON, &edgeType); err == nil {
-				var companyProps, edgeProps map[string]interface{}
-				if err := json.Unmarshal(companyPropsJSON, &companyProps); err == nil {
-					company := CompanyNode{
-						Name:      companyProps["name"].(string),
-						IsCurrent: edgeType == "WORKS_AT",
+			if err := companyRows.Scan(&personNodeID, &companyNodeID, &companyPropsJSON, &edgePropsJSON, &edgeType); err == nil {
+				if idx, ok := personIdxMap[personNodeID]; ok {
+					var companyProps, edgeProps map[string]interface{}
+					if err := json.Unmarshal(companyPropsJSON, &companyProps); err == nil {
+						company := CompanyNode{
+							Name:      companyProps["name"].(string),
+							IsCurrent: edgeType == "WORKS_AT",
+						}
+						if err := json.Unmarshal(edgePropsJSON, &edgeProps); err == nil {
+							if pos, ok := edgeProps["position"].(string); ok {
+								company.Position = pos
+							}
+							if start, ok := edgeProps["start_year"]; ok {
+								company.StartYear = start
+							}
+							if end, ok := edgeProps["end_year"]; ok {
+								company.EndYear = end
+							}
+							if duration, ok := edgeProps["duration_years"]; ok {
+								company.DurationYears = duration
+							}
+						}
+						results[idx].Companies = append(results[idx].Companies, company)
 					}
-					if err := json.Unmarshal(edgePropsJSON, &edgeProps); err == nil {
-						if pos, ok := edgeProps["position"].(string); ok {
-							company.Position = pos
-						}
-						if start, ok := edgeProps["start_year"]; ok {
-							company.StartYear = start
-						}
-						if end, ok := edgeProps["end_year"]; ok {
-							company.EndYear = end
-						}
-						if duration, ok := edgeProps["duration_years"]; ok {
-							company.DurationYears = duration
-						}
-					}
-					result.Companies = append(result.Companies, company)
 				}
 			}
 		}
 	}
 
 	// Fetch education
-	eduRows, err := q.db.QueryContext(ctx, `
-		SELECT ed.node_id, ed.properties
+	eduQuery := fmt.Sprintf(`
+		SELECT p.node_id, ed.node_id, ed.properties
 		FROM graph_nodes p
 		JOIN graph_edges e ON p.id = e.source_node_id
 		JOIN graph_nodes ed ON e.target_node_id = ed.id
-		WHERE p.node_id = $1
+		WHERE p.node_id IN (%s)
 		  AND e.edge_type = 'GRADUATED_FROM'
 		  AND ed.node_type = 'education'
-	`, result.PersonID)
+	`, inClause)
 
+	eduRows, err := q.db.QueryContext(ctx, eduQuery, personIDs...)
 	if err == nil {
 		defer eduRows.Close()
 		for eduRows.Next() {
-			var nodeID string
+			var personNodeID, eduNodeID string
 			var propsJSON []byte
-			if err := eduRows.Scan(&nodeID, &propsJSON); err == nil {
-				var props map[string]interface{}
-				if err := json.Unmarshal(propsJSON, &props); err == nil {
-					edu := EducationNode{
-						Institution: props["institution"].(string),
+			if err := eduRows.Scan(&personNodeID, &eduNodeID, &propsJSON); err == nil {
+				if idx, ok := personIdxMap[personNodeID]; ok {
+					var props map[string]interface{}
+					if err := json.Unmarshal(propsJSON, &props); err == nil {
+						edu := EducationNode{
+							Institution: props["institution"].(string),
+						}
+						if deg, ok := props["degree"].(string); ok {
+							edu.Degree = deg
+						}
+						if field, ok := props["field"].(string); ok {
+							edu.Field = field
+						}
+						results[idx].Education = append(results[idx].Education, edu)
 					}
-					if deg, ok := props["degree"].(string); ok {
-						edu.Degree = deg
-					}
-					if field, ok := props["field"].(string); ok {
-						edu.Field = field
-					}
-					result.Education = append(result.Education, edu)
 				}
 			}
 		}
