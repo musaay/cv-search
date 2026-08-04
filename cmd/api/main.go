@@ -150,6 +150,7 @@ func runReprocessJob(apiSrv *api.API, cfg *config.Config) {
 		DryRun:          dryRun,
 		LLMProvider:     llmProvider,
 		DisableBatchAPI: os.Getenv("GROQ_BATCH_DISABLED") == "true",
+		ForceAll:        os.Getenv("REPROCESS_FORCE_ALL") == "true",
 	}
 	if v := os.Getenv("REPROCESS_BATCH_THRESHOLD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

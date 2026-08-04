@@ -241,6 +241,14 @@ Extract and return ONLY valid JSON (no markdown, no explanation) with this exact
 }
 
 Important:
+- Calculate 'total_experience_years' accurately by adding up all unique work durations from the start of their first relevant job to the current date. Do NOT skip any jobs. (e.g., 2015 to 2026 is 11 years).
+- Determine 'seniority' strictly based on total experience: 0-2 years = Junior, 3-6 years = Mid-level, 7+ years = Senior. Unless explicitly stated otherwise as a higher title (Lead/Architect) in their current role.
+- Ignore any birth dates (e.g. 1990, 1995) completely. Never use a birth date as a job start or end year.
+- Only extract 'companies' from the actual work experience or employment history sections. Do NOT extract companies mentioned in summaries, projects, or random text.
+- If the candidate has a job with 'is_current: true', set the 'current_position' to that job's title. If they are currently unemployed, set it to their most recent job title.
+- Normalize job titles to standard English equivalents (e.g. 'Yazılım Geliştirici' -> 'Software Developer', 'Test Uzmanı' -> 'QA Engineer').
+- Only extract hard technical skills, tools, and languages. Do NOT extract soft skills like 'Teamwork', 'Communication', 'Leadership', 'Problem Solving'.
+- Extract locations strictly in 'City, Country' format (e.g. 'Istanbul, Turkiye'). If the country is missing in the CV, infer it from the city name.
 - Normalize skill names (e.g., "K8s" → "Kubernetes", "JS" → "JavaScript", "React.js" → "React")
 - Infer proficiency from context (e.g., "expert in Java" → "Expert", "familiar with Python" → "Beginner")
 - For skills, calculate years from work history (e.g., "Java at Company X (2018-2023)" → years: 5)

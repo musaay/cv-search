@@ -15,8 +15,10 @@ import (
 
 func main() {
 	var dryRun bool
+	var forceAll bool
 	var onlyCandidateID int
 	flag.BoolVar(&dryRun, "dry-run", true, "only report")
+	flag.BoolVar(&forceAll, "force-all", false, "reprocess all candidates")
 	flag.IntVar(&onlyCandidateID, "candidate-id", 0, "specific candidate")
 	flag.Parse()
 
@@ -60,6 +62,7 @@ func main() {
 
 	opts := reprocess.Options{
 		DryRun:          dryRun,
+		ForceAll:        forceAll,
 		OnlyCandidateID: onlyCandidateID,
 		LLMProvider:     llmProvider,
 		DisableBatchAPI: os.Getenv("GROQ_BATCH_DISABLED") == "true",

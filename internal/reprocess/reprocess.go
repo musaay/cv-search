@@ -45,6 +45,9 @@ type Options struct {
 	// plan doesn't support Batch API — avoids a pointless submit-then-403
 	// round trip on every run.
 	DisableBatchAPI bool
+	// ForceAll, if true, bypasses the "broken/incomplete" checks and reprocesses
+	// every single candidate in the database.
+	ForceAll bool
 }
 
 type brokenCandidate struct {
@@ -70,6 +73,13 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 		whereExtra = fmt.Sprintf(" AND c.id = %d", opts.OnlyCandidateID)
 	}
 
+	whereClause := `WHERE (c.skills IS NULL OR length(c.skills) < 20
+		       OR (SELECT count(*) FROM graph_edges ge WHERE ge.source_node_id = gn.id) < 3)`
+	
+	if opts.ForceAll {
+		whereClause = "WHERE 1=1"
+	}
+
 	q := fmt.Sprintf(`
 		SELECT
 			c.id,
@@ -81,10 +91,9 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 			COALESCE(length(c.skills), 0) AS skills_len
 		FROM candidates c
 		JOIN graph_nodes gn ON gn.id = c.graph_node_id
-		WHERE (c.skills IS NULL OR length(c.skills) < 20
-		       OR (SELECT count(*) FROM graph_edges ge WHERE ge.source_node_id = gn.id) < 3)
 		%s
-		ORDER BY c.id`, whereExtra)
+		%s
+		ORDER BY c.id`, whereClause, whereExtra)
 
 	rows, err := db.GetConnection().QueryContext(ctx, q)
 	if err != nil {
