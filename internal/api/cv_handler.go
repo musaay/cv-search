@@ -271,33 +271,6 @@ func (a *API) GetPopularSkillsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// collectNewNodeIDs gets all nodes without embeddings (likely newly created from this CV)
-func (a *API) collectNewNodeIDs(ctx context.Context, cvID int64) []string {
-	rows, err := a.db.GetConnection().QueryContext(ctx, `
-		SELECT node_id 
-		FROM graph_nodes 
-		WHERE embedding IS NULL
-		ORDER BY created_at DESC
-	`)
-
-	if err != nil {
-		log.Printf("Failed to query unembedded nodes: %v", err)
-		return []string{}
-	}
-	defer rows.Close()
-
-	nodeIDs := []string{}
-	for rows.Next() {
-		var nodeID string
-		if err := rows.Scan(&nodeID); err != nil {
-			continue
-		}
-		nodeIDs = append(nodeIDs, nodeID)
-	}
-
-	return nodeIDs
-}
-
 // GetJobStatusHandler returns the status of a CV processing job
 // @Summary Get CV processing job status
 // @Description Get the current status of an async CV processing job

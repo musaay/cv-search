@@ -99,6 +99,13 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 		clusters[ci].embeddings = append(clusters[ci].embeddings, p.embedding)
 	}
 
+	// Start a transaction for bulk inserts to dramatically speed up processing
+	tx, err := cd.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	successCount := 0
 	for ci, cl := range clusters {
 		if len(cl.personIntIDs) == 0 {
@@ -137,7 +144,7 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 		var gcID int
 		var upsertErr error
 		if embeddingJSON != "" {
-			upsertErr = cd.db.QueryRowContext(ctx, `
+			upsertErr = tx.QueryRowContext(ctx, `
 				INSERT INTO graph_communities (level, community_id, title, summary, node_count, embedding, updated_at)
 				VALUES ($1, $2, $3, $4, $5, $6::vector, NOW())
 				ON CONFLICT (level, community_id) DO UPDATE
@@ -149,7 +156,7 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 				RETURNING id
 			`, level, communityID, title, summary, len(cl.personIntIDs), embeddingJSON).Scan(&gcID)
 		} else {
-			upsertErr = cd.db.QueryRowContext(ctx, `
+			upsertErr = tx.QueryRowContext(ctx, `
 				INSERT INTO graph_communities (level, community_id, title, summary, node_count, updated_at)
 				VALUES ($1, $2, $3, $4, $5, NOW())
 				ON CONFLICT (level, community_id) DO UPDATE
@@ -168,7 +175,7 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 		centroid := centroids[ci]
 		for j, nodeIntID := range cl.personIntIDs {
 			strength := cdCosineSimilarity(cl.embeddings[j], centroid)
-			_, err := cd.db.ExecContext(ctx, `
+			_, err := tx.ExecContext(ctx, `
 				INSERT INTO community_members (community_id, node_id, membership_strength)
 				VALUES ($1, $2, $3)
 				ON CONFLICT (community_id, node_id) DO UPDATE
@@ -183,6 +190,10 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 		if ci < k-1 {
 			time.Sleep(300 * time.Millisecond)
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	log.Printf("[CommunityDetect] Done: %d/%d communities written", successCount, k)
@@ -464,4 +475,59 @@ func cdMin(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// AssignToClosestCommunity assigns a specific person to the semantically closest existing community.
+// This is an incremental assignment used after a single CV upload to avoid full re-clustering.
+func (cd *CommunityDetector) AssignToClosestCommunity(ctx context.Context, personNodeID string) error {
+	// 1. Get person's embedding
+	var personEmbStr string
+	var personIntID int
+	err := cd.db.QueryRowContext(ctx, `
+		SELECT id, embedding::text 
+		FROM graph_nodes 
+		WHERE node_id = $1 AND node_type = 'person' AND embedding IS NOT NULL
+	`, personNodeID).Scan(&personIntID, &personEmbStr)
+	
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Expected if the node isn't embedded yet or doesn't exist
+			return nil 
+		}
+		return fmt.Errorf("failed to get person embedding: %w", err)
+	}
+
+	// 2. Find closest community by cosine distance
+	var gcID int
+	var strength float64
+	err = cd.db.QueryRowContext(ctx, `
+		SELECT id, 1 - (embedding <=> $1::vector) as similarity
+		FROM graph_communities
+		WHERE level = 0 AND embedding IS NOT NULL
+		ORDER BY embedding <=> $1::vector ASC
+		LIMIT 1
+	`, personEmbStr).Scan(&gcID, &strength)
+	
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// No communities exist yet, we just wait for a full rebuild
+			return nil 
+		}
+		return fmt.Errorf("failed to find closest community: %w", err)
+	}
+
+	// 3. Insert or update membership
+	_, err = cd.db.ExecContext(ctx, `
+		INSERT INTO community_members (community_id, node_id, membership_strength)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (community_id, node_id) DO UPDATE
+		  SET membership_strength = EXCLUDED.membership_strength
+	`, gcID, personIntID, strength)
+	
+	if err != nil {
+		return fmt.Errorf("failed to insert community membership: %w", err)
+	}
+	
+	log.Printf("[CommunityDetect] Incrementally assigned %s to community %d (strength: %.3f)", personNodeID, gcID, strength)
+	return nil
 }

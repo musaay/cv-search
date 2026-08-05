@@ -41,6 +41,9 @@ func (a *API) StartBackgroundWorkers() {
 		go a.groqBatchPollWorker()
 	}
 
+	// Scheduled Community Detection Worker (Full Rebuild)
+	go a.scheduledCommunityDetectionWorker()
+
 	log.Println("[BackgroundJobs] Workers started (CV processing + embeddings + batch poller)")
 }
 
@@ -91,9 +94,20 @@ func (a *API) embeddingWorker() {
 		log.Printf("[EmbeddingWorker] Completed CV %d: %d success, %d failed (took %v)",
 			job.CVID, successCount, failCount, duration)
 
-		// After embeddings are ready, rebuild communities so the new CV
-		// is assigned to the right cluster immediately.
-		a.triggerCommunityDetection()
+		// After embeddings are ready, incrementally assign the candidate to the closest community
+		// to avoid full re-clustering on every upload.
+		var personNodeID string
+		for _, id := range job.NodeIDs {
+			if strings.HasPrefix(id, "person_") {
+				personNodeID = id
+				break
+			}
+		}
+		if personNodeID != "" && a.enhancedSearchEngine != nil {
+			if err := a.enhancedSearchEngine.GetCommunityDetector().AssignToClosestCommunity(ctx, personNodeID); err != nil {
+				log.Printf("[EmbeddingWorker] Failed to assign %s to community: %v", personNodeID, err)
+			}
+		}
 	}
 }
 
@@ -187,7 +201,7 @@ func (a *API) applyExtraction(ctx context.Context, jobID, cvFileID int64, extrac
 			"education": extraction.Education,
 		}
 
-		if err := a.graphBuilder.BuildFromLLMExtraction(ctx, int(cvFileID), extractionMap); err != nil {
+		if newNodeIDs, err := a.graphBuilder.BuildFromLLMExtraction(ctx, int(cvFileID), extractionMap); err != nil {
 			log.Printf("[ApplyExtraction] Graph building failed for job %d: %v", jobID, err)
 		} else {
 			log.Printf("[ApplyExtraction] Job %d: Graph built successfully", jobID)
@@ -216,7 +230,6 @@ func (a *API) applyExtraction(ctx context.Context, jobID, cvFileID int64, extrac
 			}
 
 			// Queue background embedding job for newly created nodes
-			newNodeIDs := a.collectNewNodeIDs(ctx, cvFileID)
 			if len(newNodeIDs) > 0 {
 				a.QueueEmbeddingJob(cvFileID, newNodeIDs)
 				log.Printf("[ApplyExtraction] Job %d: Queued %d nodes for embedding", jobID, len(newNodeIDs))
@@ -455,32 +468,38 @@ func (a *API) pollGroqBatch(ctx context.Context, groqBatchID string) {
 	}
 }
 
-// triggerCommunityDetection runs a full community detection pass in a background
-// goroutine. Debounced by communityDetectDebounce — if it ran recently (e.g. bulk
-// upload of 10 CVs), the duplicate triggers are silently dropped.
-func (a *API) triggerCommunityDetection() {
+// scheduledCommunityDetectionWorker runs a full community detection pass once a day at 03:00 AM.
+func (a *API) scheduledCommunityDetectionWorker() {
 	if a.enhancedSearchEngine == nil {
 		return // community detection requires LLM to be configured
 	}
 
-	a.commDetectMu.Lock()
-	if time.Since(a.lastCommDetect) < communityDetectDebounce {
-		a.commDetectMu.Unlock()
-		log.Printf("[CommunityDetect] Skipped (ran %.0fs ago)", time.Since(a.lastCommDetect).Seconds())
-		return
-	}
-	a.lastCommDetect = time.Now()
-	a.commDetectMu.Unlock()
+	for {
+		now := time.Now()
+		// Target 03:00 AM local time
+		target := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, now.Location())
+		if now.After(target) {
+			target = target.Add(24 * time.Hour)
+		}
 
-	go func() {
-		log.Printf("[CommunityDetect] Starting automatic community detection after CV upload...")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
+		sleepDuration := target.Sub(now)
+		log.Printf("[ScheduledCommunityDetect] Next full rebuild scheduled at %v (in %v)", target.Format(time.RFC3339), sleepDuration)
+
+		time.Sleep(sleepDuration)
+
+		log.Printf("[ScheduledCommunityDetect] Starting nightly full rebuild...")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		
+		a.commDetectMu.Lock()
+		a.lastCommDetect = time.Now()
+		a.commDetectMu.Unlock()
 
 		if err := a.enhancedSearchEngine.GetCommunityDetector().DetectCommunities(ctx, 0); err != nil {
-			log.Printf("[CommunityDetect] Failed: %v", err)
+			log.Printf("[ScheduledCommunityDetect] Failed: %v", err)
 		} else {
-			log.Printf("[CommunityDetect] Completed successfully")
+			log.Printf("[ScheduledCommunityDetect] Completed successfully")
 		}
-	}()
+		
+		cancel()
+	}
 }

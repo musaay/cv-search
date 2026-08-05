@@ -1655,3 +1655,48 @@ func (db *DB) MergeCandidateNodes(ctx context.Context, masterID int, duplicateID
 	_ = db.SyncCandidateTextFields(ctx, masterID, masterNodeID)
 	return nil
 }
+				    SELECT (properties->>'cv_id')::int
+				    FROM graph_nodes
+				    WHERE id = $2 AND properties->>'cv_id' ~ '^[0-9]+$'
+				) AND (candidate_id IS NULL OR candidate_id = $3)
+			`, masterID, dupNodeID, dupID)
+			if err != nil {
+				return fmt.Errorf("transfer cv_files from node properties %d: %w", dupNodeID, err)
+			}
+		}
+
+		// Transfer interviews
+		_, err = tx.ExecContext(ctx, `UPDATE interviews SET candidate_id = $1 WHERE candidate_id = $2`, masterID, dupID)
+		if err != nil {
+			return fmt.Errorf("transfer interviews from candidate %d: %w", dupID, err)
+		}
+
+		// Transfer candidate_scores (history)
+		_, err = tx.ExecContext(ctx, `UPDATE candidate_scores SET candidate_id = $1 WHERE candidate_id = $2`, masterID, dupID)
+		if err != nil {
+			return fmt.Errorf("transfer candidate_scores from candidate %d: %w", dupID, err)
+		}
+
+		// Delete duplicate candidate (will CASCADE delete remaining references if any)
+		_, err = tx.ExecContext(ctx, `DELETE FROM candidates WHERE id = $1`, dupID)
+		if err != nil {
+			return fmt.Errorf("delete candidate %d: %w", dupID, err)
+		}
+
+		// Delete duplicate graph node (will CASCADE delete community members, etc.)
+		if dupNodeID > 0 {
+			_, err = tx.ExecContext(ctx, `DELETE FROM graph_nodes WHERE id = $1`, dupNodeID)
+			if err != nil {
+				return fmt.Errorf("delete graph node %d: %w", dupNodeID, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit merge transaction: %w", err)
+	}
+
+	// Resync search vector and experience/skills fields on master candidate outside tx
+	_ = db.SyncCandidateTextFields(ctx, masterID, masterNodeID)
+	return nil
+}

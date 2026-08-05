@@ -166,19 +166,21 @@ func (g *GraphBuilder) QueryGraph(ctx context.Context, nodeType, nodeID string, 
 }
 
 // BuildFromLLMExtraction creates graph from LLM-extracted CV data
-func (g *GraphBuilder) BuildFromLLMExtraction(ctx context.Context, cvID int, extraction interface{}) error {
+func (g *GraphBuilder) BuildFromLLMExtraction(ctx context.Context, cvID int, extraction interface{}) ([]string, error) {
 	// Type assert to map structure from handler
 	ext, ok := extraction.(map[string]interface{})
 	if !ok {
-		return fmt.Errorf("invalid extraction format")
+		return nil, fmt.Errorf("invalid extraction format")
 	}
 
 	var entities []Entity
 	var relationships []Relationship
+	var nodeIDs []string
 
 	// 1. Create Person node from candidate
 	if candidate, ok := ext["candidate"].(map[string]interface{}); ok {
 		personID := fmt.Sprintf("person_%d", cvID)
+		nodeIDs = append(nodeIDs, personID)
 		entities = append(entities, Entity{
 			Type:  "person",
 			Value: personID,
@@ -198,6 +200,7 @@ func (g *GraphBuilder) BuildFromLLMExtraction(ctx context.Context, cvID int, ext
 			if ok {
 				for _, skill := range skills {
 					skillID := fmt.Sprintf("skill_%s", skill.Name)
+					nodeIDs = append(nodeIDs, skillID)
 
 					// Create skill node
 					entities = append(entities, Entity{
@@ -234,6 +237,7 @@ func (g *GraphBuilder) BuildFromLLMExtraction(ctx context.Context, cvID int, ext
 			if ok {
 				for i, company := range companies {
 					companyID := fmt.Sprintf("company_%s", company.Name)
+					nodeIDs = append(nodeIDs, companyID)
 
 					// Create company node
 					entities = append(entities, Entity{
@@ -284,6 +288,7 @@ func (g *GraphBuilder) BuildFromLLMExtraction(ctx context.Context, cvID int, ext
 			if ok {
 				for _, edu := range education {
 					eduID := fmt.Sprintf("education_%s", edu.Institution)
+					nodeIDs = append(nodeIDs, eduID)
 
 					// Create education node
 					entities = append(entities, Entity{
@@ -315,7 +320,7 @@ func (g *GraphBuilder) BuildFromLLMExtraction(ctx context.Context, cvID int, ext
 
 	// Create all nodes
 	if err := g.CreateNodes(ctx, entities); err != nil {
-		return fmt.Errorf("failed to create nodes: %w", err)
+		return nil, fmt.Errorf("failed to create nodes: %w", err)
 	}
 
 	// Delete existing edges for this person before inserting new ones
@@ -332,8 +337,8 @@ func (g *GraphBuilder) BuildFromLLMExtraction(ctx context.Context, cvID int, ext
 
 	// Create all edges
 	if err := g.CreateEdges(ctx, relationships); err != nil {
-		return fmt.Errorf("failed to create edges: %w", err)
+		return nil, fmt.Errorf("failed to create edges: %w", err)
 	}
 
-	return nil
+	return nodeIDs, nil
 }

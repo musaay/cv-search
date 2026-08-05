@@ -271,7 +271,7 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 			"companies": extraction.Companies,
 			"education": extraction.Education,
 		}
-		if err := graphBuilder.BuildFromLLMExtraction(ctx, int(it.cvFileID), extractMap); err != nil {
+		if _, err := graphBuilder.BuildFromLLMExtraction(ctx, int(it.cvFileID), extractMap); err != nil {
 			log.Printf("[Reprocess]   graph build failed: %v", err)
 			failed++
 			return
