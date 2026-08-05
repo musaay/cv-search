@@ -5,7 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -104,7 +105,7 @@ func (a *API) reEmbed(candidateID int) {
 
 	graphNodeID, err := a.db.GetGraphNodeIDForCandidate(ctx, candidateID)
 	if err != nil {
-		log.Printf("[CandidateHandler] reEmbed: could not get graph_node_id for candidate %d: %v", candidateID, err)
+		slog.Error(fmt.Sprintf("[CandidateHandler] reEmbed: could not get graph_node_id for candidate %d: %v", candidateID, err))
 		return
 	}
 	if graphNodeID == 0 {
@@ -114,12 +115,12 @@ func (a *API) reEmbed(candidateID int) {
 
 	notes, err := a.db.GetInterviewNotesByGraphNodeID(ctx, graphNodeID)
 	if err != nil {
-		log.Printf("[CandidateHandler] reEmbed: could not fetch interview notes for node %d: %v", graphNodeID, err)
+		slog.Error(fmt.Sprintf("[CandidateHandler] reEmbed: could not fetch interview notes for node %d: %v", graphNodeID, err))
 		return
 	}
 
 	if err := a.hybridSearchEngine.ReEmbedPersonNode(ctx, graphNodeID, notes); err != nil {
-		log.Printf("[CandidateHandler] reEmbed: failed for node %d: %v", graphNodeID, err)
+		slog.Error(fmt.Sprintf("[CandidateHandler] reEmbed: failed for node %d: %v", graphNodeID, err))
 	}
 }
 
@@ -161,7 +162,7 @@ func (a *API) ListCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 
 	candidates, total, err := a.db.ListCandidates(r.Context(), limit, offset, search, sort, direction)
 	if err != nil {
-		log.Printf("[CandidateHandler] ListCandidates failed: %v", err)
+		slog.Error(fmt.Sprintf("[CandidateHandler] ListCandidates failed: %v", err))
 		http.Error(w, "failed to list candidates", http.StatusInternalServerError)
 		return
 	}
@@ -189,7 +190,7 @@ func (a *API) GetCandidateHandler(w http.ResponseWriter, r *http.Request) {
 
 	candidate, err := a.db.GetCandidateDetail(r.Context(), id)
 	if err != nil {
-		log.Printf("[CandidateHandler] GetCandidateDetail(%d) failed: %v", id, err)
+		slog.Error(fmt.Sprintf("[CandidateHandler] GetCandidateDetail(%d) failed: %v", id, err))
 		http.Error(w, "database error", http.StatusInternalServerError)
 		return
 	}
@@ -228,7 +229,7 @@ func (a *API) CreateInterviewHandler(w http.ResponseWriter, r *http.Request) {
 
 	newID, err := a.db.CreateInterview(r.Context(), candidateID, iv)
 	if err != nil {
-		log.Printf("[CandidateHandler] CreateInterview(candidate=%d) failed: %v", candidateID, err)
+		slog.Error(fmt.Sprintf("[CandidateHandler] CreateInterview(candidate=%d) failed: %v", candidateID, err))
 		http.Error(w, "failed to create interview", http.StatusInternalServerError)
 		return
 	}
@@ -275,7 +276,7 @@ func (a *API) UpdateInterviewHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "interview not found", http.StatusNotFound)
 			return
 		}
-		log.Printf("[CandidateHandler] UpdateInterview(%d, candidate=%d) failed: %v", interviewID, candidateID, err)
+		slog.Error(fmt.Sprintf("[CandidateHandler] UpdateInterview(%d, candidate=%d) failed: %v", interviewID, candidateID, err))
 		http.Error(w, "failed to update interview", http.StatusInternalServerError)
 		return
 	}
@@ -305,7 +306,7 @@ func (a *API) DeleteInterviewHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "interview not found", http.StatusNotFound)
 			return
 		}
-		log.Printf("[CandidateHandler] DeleteInterview(%d, candidate=%d) failed: %v", interviewID, candidateID, err)
+		slog.Error(fmt.Sprintf("[CandidateHandler] DeleteInterview(%d, candidate=%d) failed: %v", interviewID, candidateID, err))
 		http.Error(w, "failed to delete interview", http.StatusInternalServerError)
 		return
 	}
@@ -356,7 +357,7 @@ func (a *API) SimilarCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 	// Step 1: get integer graph_node_id
 	graphNodeID, err := a.db.GetGraphNodeIDForCandidate(ctx, candidateID)
 	if err != nil {
-		log.Printf("[Similar] GetGraphNodeIDForCandidate(%d): %v", candidateID, err)
+		slog.Error(fmt.Sprintf("[Similar] GetGraphNodeIDForCandidate(%d): %v", candidateID, err))
 		http.Error(w, "candidate lookup failed", http.StatusInternalServerError)
 		return
 	}
@@ -374,7 +375,7 @@ func (a *API) SimilarCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 	// Step 2: get string node_id ("person_2") — needed to exclude source from results
 	sourceNodeID, err := a.db.GetPersonNodeIDString(ctx, graphNodeID)
 	if err != nil {
-		log.Printf("[Similar] GetPersonNodeIDString(graphNodeID=%d): %v", graphNodeID, err)
+		slog.Error(fmt.Sprintf("[Similar] GetPersonNodeIDString(graphNodeID=%d): %v", graphNodeID, err))
 		http.Error(w, "graph node lookup failed", http.StatusInternalServerError)
 		return
 	}
@@ -392,7 +393,7 @@ func (a *API) SimilarCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 	// Step 3: load embedding vector
 	embedding, err := a.db.GetPersonEmbedding(ctx, graphNodeID)
 	if err != nil {
-		log.Printf("[Similar] GetPersonEmbedding(graphNodeID=%d): %v", graphNodeID, err)
+		slog.Error(fmt.Sprintf("[Similar] GetPersonEmbedding(graphNodeID=%d): %v", graphNodeID, err))
 		http.Error(w, "embedding lookup failed", http.StatusInternalServerError)
 		return
 	}
@@ -410,7 +411,7 @@ func (a *API) SimilarCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 	// Step 4: nearest-neighbour search via pgvector
 	embSvc := a.hybridSearchEngine.GetEmbeddingService()
 	if embSvc == nil {
-		log.Printf("[Similar] embedding service unavailable")
+		slog.Info(fmt.Sprintf("[Similar] embedding service unavailable"))
 		http.Error(w, "embedding service unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -418,7 +419,7 @@ func (a *API) SimilarCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 	// Fetch topK+1 so we can exclude the source candidate itself from results
 	nodeIDs, sims, err := embSvc.SimilaritySearchByEmbedding(ctx, embedding, topK+1)
 	if err != nil {
-		log.Printf("[Similar] SimilaritySearchByEmbedding: %v", err)
+		slog.Error(fmt.Sprintf("[Similar] SimilaritySearchByEmbedding: %v", err))
 		http.Error(w, "similarity search failed", http.StatusInternalServerError)
 		return
 	}
@@ -431,7 +432,7 @@ func (a *API) SimilarCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 
 	similar, err := a.db.GetCandidatesByPersonNodeIDs(ctx, nodeIDs, sourceNodeID, simMap)
 	if err != nil {
-		log.Printf("[Similar] GetCandidatesByPersonNodeIDs: %v", err)
+		slog.Error(fmt.Sprintf("[Similar] GetCandidatesByPersonNodeIDs: %v", err))
 		http.Error(w, "enrichment query failed", http.StatusInternalServerError)
 		return
 	}

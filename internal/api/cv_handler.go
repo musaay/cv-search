@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -68,21 +68,21 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("CV parsed: %s (%d bytes text)", parsedCV.Filename, len(parsedCV.FullText))
+	slog.Info(fmt.Sprintf("CV parsed: %s (%d bytes text)", parsedCV.Filename, len(parsedCV.FullText)))
 
 	// Calculate content hash for duplicate detection
 	hash := sha256.Sum256([]byte(parsedCV.FullText))
 	contentHash := hex.EncodeToString(hash[:])
-	log.Printf("[DUPLICATE CHECK] Content hash: %s (length: %d)", contentHash[:16], len(contentHash))
+	slog.Info(fmt.Sprintf("[DUPLICATE CHECK] Content hash: %s (length: %d)", contentHash[:16], len(contentHash)))
 
 	// Check if CV already exists
 	existingCV, err := a.db.FindCVByHash(r.Context(), contentHash)
 	if err != nil {
-		log.Printf("[DUPLICATE CHECK] Error checking for duplicate CV: %v", err)
+		slog.Error(fmt.Sprintf("[DUPLICATE CHECK] Error checking for duplicate CV: %v", err))
 		// Continue with upload even if duplicate check fails
 	} else if existingCV != nil {
 		// CV already exists - return existing info
-		log.Printf("[DUPLICATE CHECK] Duplicate CV detected: %s (existing ID: %d)", parsedCV.Filename, existingCV.ID)
+		slog.Info(fmt.Sprintf("[DUPLICATE CHECK] Duplicate CV detected: %s (existing ID: %d)", parsedCV.Filename, existingCV.ID))
 
 		response := map[string]interface{}{
 			"cv_id":              existingCV.ID,
@@ -101,26 +101,26 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save CV file to database with hash
-	log.Printf("[DUPLICATE CHECK] Saving CV with hash to database...")
+	slog.Info(fmt.Sprintf("[DUPLICATE CHECK] Saving CV with hash to database..."))
 	cvID, err := a.db.SaveCVFileWithHash(r.Context(), nil, parsedCV.Filename,
 		parsedCV.Filename, parsedCV.FileType, parsedCV.FullText, parsedCV.FileSize, contentHash)
 	if err != nil {
-		log.Printf("Failed to save CV: %v", err)
+		slog.Error(fmt.Sprintf("Failed to save CV: %v", err))
 		http.Error(w, "failed to save CV", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("CV saved to database with ID: %d (hash: %s...)", cvID, contentHash[:16])
+	slog.Info(fmt.Sprintf("CV saved to database with ID: %d (hash: %s...)", cvID, contentHash[:16]))
 
 	// Create async processing job
 	jobID, err := a.db.CreateCVUploadJob(r.Context(), int64(cvID))
 	if err != nil {
-		log.Printf("Failed to create job: %v", err)
+		slog.Error(fmt.Sprintf("Failed to create job: %v", err))
 		http.Error(w, "failed to create processing job", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Created job %d for CV %d", jobID, cvID)
+	slog.Info(fmt.Sprintf("Created job %d for CV %d", jobID, cvID))
 
 	// Queue job for background processing
 	if !a.queueCVProcessingJob(jobID, int64(cvID), parsedCV.FullText) {
@@ -144,15 +144,15 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		"check_status_url":   fmt.Sprintf("/api/cv/job/%d", jobID),
 	}
 
-	log.Printf("CV upload complete - instant response in %dms (job %d queued for processing)", processingTime, jobID)
+	slog.Info(fmt.Sprintf("CV upload complete - instant response in %dms (job %d queued for processing)", processingTime, jobID))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted) // 202 Accepted (async processing)
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("ERROR: Failed to encode JSON response: %v", err)
+		slog.Error(fmt.Sprintf("ERROR: Failed to encode JSON response: %v", err))
 	} else {
-		log.Printf("Response sent successfully for CV %d (job %d)", cvID, jobID)
+		slog.Info(fmt.Sprintf("Response sent successfully for CV %d (job %d)", cvID, jobID))
 	}
 }
 
@@ -243,7 +243,7 @@ func (a *API) GetPopularSkillsHandler(w http.ResponseWriter, r *http.Request) {
 	`, limit)
 
 	if err != nil {
-		log.Printf("Query error: %v", err)
+		slog.Error(fmt.Sprintf("Query error: %v", err))
 		http.Error(w, "database error", http.StatusInternalServerError)
 		return
 	}
@@ -304,7 +304,7 @@ func (a *API) GetJobStatusHandler(w http.ResponseWriter, r *http.Request) {
 	// Get job from database
 	job, err := a.db.GetJobByID(r.Context(), jobID)
 	if err != nil {
-		log.Printf("Failed to get job %d: %v", jobID, err)
+		slog.Error(fmt.Sprintf("Failed to get job %d: %v", jobID, err))
 		http.Error(w, "database error", http.StatusInternalServerError)
 		return
 	}
@@ -425,7 +425,7 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 
 		file, err := fileHeader.Open()
 		if err != nil {
-			log.Printf("[BulkUpload] Cannot open %s: %v", fileHeader.Filename, err)
+			slog.Error(fmt.Sprintf("[BulkUpload] Cannot open %s: %v", fileHeader.Filename, err))
 			res.Status = "error"
 			skipped++
 			results = append(results, res)
@@ -435,7 +435,7 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		parsedCV, err := a.cvParser.ParseFile(fileHeader.Filename, file)
 		file.Close()
 		if err != nil {
-			log.Printf("[BulkUpload] Parse error %s: %v", fileHeader.Filename, err)
+			slog.Error(fmt.Sprintf("[BulkUpload] Parse error %s: %v", fileHeader.Filename, err))
 			res.Status = "error"
 			skipped++
 			results = append(results, res)
@@ -459,7 +459,7 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		cvID, err := a.db.SaveCVFileWithHash(r.Context(), nil, parsedCV.Filename,
 			parsedCV.Filename, parsedCV.FileType, parsedCV.FullText, parsedCV.FileSize, contentHash)
 		if err != nil {
-			log.Printf("[BulkUpload] DB save error %s: %v", fileHeader.Filename, err)
+			slog.Error(fmt.Sprintf("[BulkUpload] DB save error %s: %v", fileHeader.Filename, err))
 			res.Status = "error"
 			skipped++
 			results = append(results, res)
@@ -468,7 +468,7 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 
 		jobID, err := a.db.CreateCVUploadJob(r.Context(), int64(cvID))
 		if err != nil {
-			log.Printf("[BulkUpload] Job create error %s: %v", fileHeader.Filename, err)
+			slog.Error(fmt.Sprintf("[BulkUpload] Job create error %s: %v", fileHeader.Filename, err))
 			res.Status = "error"
 			skipped++
 			results = append(results, res)
@@ -510,10 +510,10 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 
 		groqBatchID, err := a.SubmitCVExtractionBatch(r.Context(), jobs)
 		if err != nil {
-			log.Printf("[BulkUpload] Groq batch submission failed, falling back to real-time queue: %v", err)
+			slog.Error(fmt.Sprintf("[BulkUpload] Groq batch submission failed, falling back to real-time queue: %v", err))
 			useBatchAPI = false
 		} else {
-			log.Printf("[BulkUpload] Submitted %d CVs as Groq batch %s", len(pending), groqBatchID)
+			slog.Info(fmt.Sprintf("[BulkUpload] Submitted %d CVs as Groq batch %s", len(pending), groqBatchID))
 			for _, p := range pending {
 				results[p.resultIdx].Status = "batch_submitted"
 			}
@@ -534,6 +534,21 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	batchJobs = make([]BatchJob, 0, len(results))
+	for _, res := range results {
+		bj := BatchJob{
+			Filename: res.Filename,
+			Status:   res.Status,
+		}
+		if res.JobID != nil {
+			bj.JobID = *res.JobID
+		}
+		if res.CVID != nil {
+			bj.CVID = *res.CVID
+		}
+		batchJobs = append(batchJobs, bj)
+	}
+
 	// Persist batch to in-memory store
 	a.batchStore.set(&BatchEntry{
 		BatchID:   batchID,
@@ -541,7 +556,7 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	})
 
-	log.Printf("[BulkUpload] batch=%s total=%d queued=%d skipped=%d batch_api=%v", batchID, len(files), queued, skipped, useBatchAPI)
+	slog.Info(fmt.Sprintf("[BulkUpload] batch=%s total=%d queued=%d skipped=%d batch_api=%v", batchID, len(files), queued, skipped, useBatchAPI))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusMultiStatus) // 207
@@ -595,18 +610,26 @@ func (a *API) GetBatchStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, bj := range entry.Jobs {
-		job, err := a.db.GetJobByID(r.Context(), bj.JobID)
-		status := "unknown"
-		if err != nil {
-			log.Printf("[BatchStatus] GetJobByID(%d) error: %v", bj.JobID, err)
-		} else if job != nil {
-			status = job.Status
-		} else {
-			log.Printf("[BatchStatus] GetJobByID(%d) returned nil (not found)", bj.JobID)
+		status := bj.Status
+		if status == "" {
+			status = "unknown"
+		}
+
+		if bj.JobID > 0 {
+			job, err := a.db.GetJobByID(r.Context(), bj.JobID)
+			if err != nil {
+				slog.Error(fmt.Sprintf("[BatchStatus] GetJobByID(%d) error: %v", bj.JobID, err))
+			} else if job != nil {
+				status = job.Status
+			} else {
+				slog.Info(fmt.Sprintf("[BatchStatus] GetJobByID(%d) returned nil (not found)", bj.JobID))
+			}
 		}
 
 		if _, tracked := summary[status]; tracked {
 			summary[status]++
+		} else {
+			summary[status] = 1
 		}
 		jobs = append(jobs, JobStatus{
 			JobID: bj.JobID, Filename: bj.Filename, CVID: bj.CVID, Status: status,

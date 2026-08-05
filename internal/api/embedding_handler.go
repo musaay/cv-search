@@ -3,7 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -29,7 +29,7 @@ func (a *API) GenerateEmbeddingsHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	log.Printf("[Embeddings API] Queueing background embedding generation...")
+	slog.Info(fmt.Sprintf("[Embeddings API] Queueing background embedding generation..."))
 
 	// Get all nodes without embeddings
 	rows, err := a.db.GetConnection().QueryContext(r.Context(), `
@@ -115,19 +115,19 @@ func (a *API) DetectCommunitiesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("[Communities API] Starting community detection (level=%d)...", level)
+	slog.Info(fmt.Sprintf("[Communities API] Starting community detection (level=%d)...", level))
 	startTime := time.Now()
 
 	// Run community detection
 	err := a.enhancedSearchEngine.GetCommunityDetector().DetectCommunities(r.Context(), level)
 	if err != nil {
-		log.Printf("[Communities API] Failed: %v", err)
+		slog.Error(fmt.Sprintf("[Communities API] Failed: %v", err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	processingTime := time.Since(startTime)
-	log.Printf("[Communities API] Completed in %v", processingTime)
+	slog.Info(fmt.Sprintf("[Communities API] Completed in %v", processingTime))
 
 	// Get stats
 	var stats struct {
@@ -144,7 +144,7 @@ func (a *API) DetectCommunitiesHandler(w http.ResponseWriter, r *http.Request) {
 	`, level).Scan(&stats.TotalCommunities, &stats.TotalMembers)
 
 	if err != nil {
-		log.Printf("[Communities API] Stats query failed: %v", err)
+		slog.Error(fmt.Sprintf("[Communities API] Stats query failed: %v", err))
 	}
 
 	response := map[string]interface{}{

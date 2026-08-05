@@ -2,7 +2,8 @@ package api
 
 import (
 	"encoding/json"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 )
 
@@ -16,7 +17,7 @@ import (
 func (a *API) GetDuplicateCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 	groups, err := a.db.FindDuplicateCandidateGroups(r.Context())
 	if err != nil {
-		log.Printf("[DuplicateHandler] FindDuplicateCandidateGroups failed: %v", err)
+		slog.Error(fmt.Sprintf("[DuplicateHandler] FindDuplicateCandidateGroups failed: %v", err))
 		http.Error(w, "failed to find duplicate candidate groups", http.StatusInternalServerError)
 		return
 	}
@@ -58,7 +59,7 @@ func (a *API) MergeCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.db.MergeCandidateNodes(r.Context(), req.MasterCandidateID, req.DuplicateCandidateIDs); err != nil {
-		log.Printf("[DuplicateHandler] MergeCandidateNodes failed (master=%d, dups=%v): %v", req.MasterCandidateID, req.DuplicateCandidateIDs, err)
+		slog.Error(fmt.Sprintf("[DuplicateHandler] MergeCandidateNodes failed (master=%d, dups=%v): %v", req.MasterCandidateID, req.DuplicateCandidateIDs, err))
 		http.Error(w, "failed to merge candidates: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -66,7 +67,7 @@ func (a *API) MergeCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 	// Fetch updated master profile
 	masterDetail, err := a.db.GetCandidateDetail(r.Context(), req.MasterCandidateID)
 	if err != nil {
-		log.Printf("[DuplicateHandler] GetCandidateDetail after merge failed for candidate %d: %v", req.MasterCandidateID, err)
+		slog.Error(fmt.Sprintf("[DuplicateHandler] GetCandidateDetail after merge failed for candidate %d: %v", req.MasterCandidateID, err))
 		// Still return success even if fetch fails
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

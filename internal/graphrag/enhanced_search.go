@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 )
@@ -59,17 +59,17 @@ type CommunityInsight struct {
 
 // Search performs enhanced semantic search with vector similarity and community detection
 func (s *EnhancedSearchEngine) Search(ctx context.Context, query string) (*EnhancedSearchResult, error) {
-	log.Printf("[Enhanced Search] Starting Microsoft GraphRAG-style search for: %s", query)
+	slog.Info(fmt.Sprintf("[Enhanced Search] Starting Microsoft GraphRAG-style search for: %s", query))
 
 	// Step 1: Vector similarity search to narrow candidates
 	candidateIDs, err := s.vectorSearch(ctx, query, 50) // Get top 50 by vector similarity
 	if err != nil || len(candidateIDs) == 0 {
-		log.Printf("[Enhanced Search] Vector search failed or empty, falling back to all candidates")
+		slog.Info(fmt.Sprintf("[Enhanced Search] Vector search failed or empty, falling back to all candidates"))
 		// Fallback to LLM-only search
 		return s.llmOnlySearch(ctx, query)
 	}
 
-	log.Printf("[Enhanced Search] Vector search found %d similar candidates", len(candidateIDs))
+	slog.Info(fmt.Sprintf("[Enhanced Search] Vector search found %d similar candidates", len(candidateIDs)))
 
 	// Step 2: Load full candidate profiles
 	candidates, err := s.loadCandidatesByIDs(ctx, candidateIDs)
@@ -80,11 +80,11 @@ func (s *EnhancedSearchEngine) Search(ctx context.Context, query string) (*Enhan
 	// Step 3: Find relevant communities
 	communities, err := s.findRelevantCommunities(ctx, query)
 	if err != nil {
-		log.Printf("[Enhanced Search] Community search failed: %v", err)
+		slog.Error(fmt.Sprintf("[Enhanced Search] Community search failed: %v", err))
 		communities = []CommunityInsight{}
 	}
 
-	log.Printf("[Enhanced Search] Found %d relevant communities", len(communities))
+	slog.Info(fmt.Sprintf("[Enhanced Search] Found %d relevant communities", len(communities)))
 
 	// Step 4: LLM ranking with community context
 	rankedCandidates, reasoning, err := s.llmRankWithCommunities(ctx, query, candidates, communities)
@@ -113,8 +113,8 @@ func (s *EnhancedSearchEngine) vectorSearch(ctx context.Context, query string, t
 		return nil, err
 	}
 
-	log.Printf("[Enhanced Search] Vector search returned %d results (top similarity: %.3f)",
-		len(nodeIDs), similarities[0])
+	slog.Info(fmt.Sprintf("[Enhanced Search] Vector search returned %d results (top similarity: %.3f)",
+		len(nodeIDs), similarities[0]))
 
 	// Filter to only person nodes
 	var personIDs []string
@@ -313,7 +313,7 @@ Include only "excellent" or "good" fits.
 	}
 
 	if err := json.Unmarshal([]byte(response), &llmResult); err != nil {
-		log.Printf("[Enhanced Search] Failed to parse LLM response: %v", err)
+		slog.Error(fmt.Sprintf("[Enhanced Search] Failed to parse LLM response: %v", err))
 		return nil, "", fmt.Errorf("failed to parse LLM response: %w", err)
 	}
 

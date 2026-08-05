@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"regexp"
 	"strconv"
@@ -30,12 +31,13 @@ var (
 func main() {
 	// Load .env file if present
 	if err := godotenv.Load(); err != nil {
-		log.Println("Warning: .env file not found, using environment variables")
+		slog.Info("Warning: .env file not found, using environment variables")
 	}
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		log.Fatal("DATABASE_URL is required")
+		slog.Error(fmt.Sprint("DATABASE_URL is required"))
+		os.Exit(1)
 	}
 
 	db, err := sql.Open("postgres", dbURL)
@@ -67,7 +69,7 @@ func main() {
 		var candID, graphNodeID int
 		var name, parsedText string
 		if err := rows.Scan(&candID, &name, &parsedText, &graphNodeID); err != nil {
-			log.Printf("Scan error: %v", err)
+			slog.Error(fmt.Sprintf("Scan error: %v", err))
 			continue
 		}
 
@@ -81,7 +83,7 @@ func main() {
 			WHERE e.source_node_id = $1 AND t.node_type = 'company';
 		`, graphNodeID)
 		if err != nil {
-			log.Printf("  Error getting company edges for %s: %v", name, err)
+			slog.Error(fmt.Sprintf("  Error getting company edges for %s: %v", name, err))
 			continue
 		}
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 )
 
@@ -19,7 +19,7 @@ func NewQueryAnalyzer(llmClient LLMClient) *QueryAnalyzer {
 
 // AnalyzeQuery converts natural language to structured search criteria
 func (a *QueryAnalyzer) AnalyzeQuery(ctx context.Context, query string) (*SearchCriteria, error) {
-	log.Printf("[GraphRAG] Analyzing query: %s", query)
+	slog.Info(fmt.Sprintf("[GraphRAG] Analyzing query: %s", query))
 
 	prompt := fmt.Sprintf(`You are a talent search query analyzer. Extract structured search criteria from the user's natural language query.
 
@@ -54,14 +54,14 @@ Now analyze this query and return ONLY the JSON:`, query)
 		return nil, fmt.Errorf("LLM query analysis failed: %w", err)
 	}
 
-	log.Printf("[GraphRAG] LLM analysis response: %s", response)
+	slog.Info(fmt.Sprintf("[GraphRAG] LLM analysis response: %s", response))
 
 	var criteria SearchCriteria
 	if err := json.Unmarshal([]byte(response), &criteria); err != nil {
 		return nil, fmt.Errorf("failed to parse LLM response: %w\nResponse: %s", err, response)
 	}
 
-	log.Printf("[GraphRAG] Extracted criteria: %+v", criteria)
+	slog.Info(fmt.Sprintf("[GraphRAG] Extracted criteria: %+v", criteria))
 	return &criteria, nil
 }
 

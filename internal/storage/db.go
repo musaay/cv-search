@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,7 +42,7 @@ func NewDB(dataSourceName string) (*DB, error) {
 
 func (db *DB) Close() {
 	if err := db.connection.Close(); err != nil {
-		log.Println("Error closing the database connection:", err)
+		slog.Info("Error closing the database connection:", err)
 	}
 }
 
@@ -220,18 +220,18 @@ func (db *DB) SaveCVFileWithHash(ctx context.Context, candidateID *int, filename
         RETURNING id
     `
 
-	log.Printf("[DB] Saving CV with hash: %s (length: %d)", contentHash[:16], len(contentHash))
+	slog.Info(fmt.Sprintf("[DB] Saving CV with hash: %s (length: %d)", contentHash[:16], len(contentHash)))
 
 	err := db.connection.QueryRowContext(ctx, query,
 		candidateID, filename, filePath, fileType, fileSize, parsedText, contentHash,
 	).Scan(&cvID)
 
 	if err != nil {
-		log.Printf("[DB] Error saving CV with hash: %v", err)
+		slog.Error(fmt.Sprintf("[DB] Error saving CV with hash: %v", err))
 		return 0, err
 	}
 
-	log.Printf("[DB] CV saved successfully with ID: %d", cvID)
+	slog.Info(fmt.Sprintf("[DB] CV saved successfully with ID: %d", cvID))
 	return cvID, nil
 }
 
@@ -483,10 +483,10 @@ func (db *DB) GetCandidateDetail(ctx context.Context, candidateID int) (*Candida
 	errCV := db.connection.QueryRowContext(ctx, `
 		SELECT id, parsed_text FROM cv_files WHERE candidate_id = $1 LIMIT 1
 	`, candidateID).Scan(&cvFileID, &parsedText)
-	
+
 	if errCV == nil {
 		c.OriginalCVText = parsedText
-		
+
 		// Try to fill empty email, phone, location from parsed CV text & entities if they are empty
 		if c.Email == "" {
 			emailMatch := regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`).FindString(parsedText)
@@ -759,7 +759,7 @@ func (db *DB) CreateCVUploadJob(ctx context.Context, cvFileID int64) (int64, err
 	// Update cv_files with job_id
 	_, err = db.connection.ExecContext(ctx, `UPDATE cv_files SET job_id = $1 WHERE id = $2`, jobID, cvFileID)
 	if err != nil {
-		log.Printf("[DB] Warning: Failed to update cv_files.job_id: %v", err)
+		slog.Error(fmt.Sprintf("[DB] Warning: Failed to update cv_files.job_id: %v", err))
 	}
 
 	return jobID, nil
@@ -1288,9 +1288,9 @@ func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCand
 	var candidateIDs []interface{}
 	var graphNodeIDs []interface{}
 	groupMap := make(map[string][]*DuplicateCandidateItem)
-	idMap := make(map[int]*DuplicateCandidateItem) // candidateID -> item pointer
+	idMap := make(map[int]*DuplicateCandidateItem)         // candidateID -> item pointer
 	nodeToCandMap := make(map[int]*DuplicateCandidateItem) // graphNodeID -> item pointer
-	
+
 	// Pre-allocate placeholders
 	var candPlaceholders []string
 	var graphPlaceholders []string
@@ -1307,12 +1307,12 @@ func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCand
 			continue
 		}
 		item.ExperienceYears = int(expFloat)
-		
+
 		allItems = append(allItems, item)
 		candidateIDs = append(candidateIDs, item.CandidateID)
 		candPlaceholders = append(candPlaceholders, fmt.Sprintf("$%d", len(candidateIDs)))
 		idMap[item.CandidateID] = item
-		
+
 		if item.GraphNodeID > 0 {
 			graphNodeIDs = append(graphNodeIDs, item.GraphNodeID)
 			graphPlaceholders = append(graphPlaceholders, fmt.Sprintf("$%d", len(graphNodeIDs)))
@@ -1336,7 +1336,7 @@ func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCand
 			WHERE candidate_id IN (%s)
 			ORDER BY uploaded_at DESC
 		`, strings.Join(candPlaceholders, ","))
-		
+
 		cvRows, err := db.connection.QueryContext(ctx, cvQuery, candidateIDs...)
 		if err == nil {
 			defer cvRows.Close()
@@ -1362,7 +1362,7 @@ func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCand
 			WHERE gn.id IN (%s)
 			  AND ge.edge_type IN ('HAS_SKILL', 'WORKED_AT', 'WORKS_AT', 'STUDIED_AT', 'GRADUATED_FROM')
 		`, strings.Join(graphPlaceholders, ","))
-		
+
 		edgeRows, err := db.connection.QueryContext(ctx, edgeQuery, graphNodeIDs...)
 		if err == nil {
 			defer edgeRows.Close()
@@ -1393,7 +1393,7 @@ func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCand
 
 	// 4. Assemble the final groups
 	var groups []DuplicateCandidateGroup
-	
+
 	// Create an ordered list of group keys based on count and then alphabetically
 	// Using a query to fetch the ordered keys
 	keyQuery := `
@@ -1409,7 +1409,7 @@ func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCand
 		return nil, err
 	}
 	defer keyRows.Close()
-	
+
 	var orderedKeys []string
 	for keyRows.Next() {
 		var key string
@@ -1417,13 +1417,13 @@ func (db *DB) FindDuplicateCandidateGroups(ctx context.Context) ([]DuplicateCand
 			orderedKeys = append(orderedKeys, key)
 		}
 	}
-	
+
 	for _, key := range orderedKeys {
 		itemsPtrs, ok := groupMap[key]
 		if !ok || len(itemsPtrs) <= 1 {
 			continue
 		}
-		
+
 		var items []DuplicateCandidateItem
 		for _, ptr := range itemsPtrs {
 			items = append(items, *ptr)

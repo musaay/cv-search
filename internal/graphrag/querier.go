@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -59,7 +59,6 @@ type SearchCriteria struct {
 	Location      []string `json:"location"`       // Cities/countries
 	ExpandedQuery string   `json:"expanded_query"` // TR/EN translations and synonyms for better BM25/Vector matching
 
-
 	// Legacy fields kept for backward compatibility
 	RequiredSkills  []string               `json:"required_skills,omitempty"`
 	PreferredSkills []string               `json:"preferred_skills,omitempty"`
@@ -86,13 +85,13 @@ func NewGraphQuerier(db *sql.DB) *GraphQuerier {
 
 // QueryGraph searches the graph based on criteria
 func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria) ([]CandidateResult, error) {
-	log.Printf("[GraphRAG] Querying graph with criteria: %+v", criteria)
+	slog.Info(fmt.Sprintf("[GraphRAG] Querying graph with criteria: %+v", criteria))
 
 	// Build SQL query dynamically based on criteria
 	query, args := q.buildQuery(criteria)
 
-	log.Printf("[GraphRAG] Executing SQL: %s", query)
-	log.Printf("[GraphRAG] With args: %v", args)
+	slog.Info(fmt.Sprintf("[GraphRAG] Executing SQL: %s", query))
+	slog.Info(fmt.Sprintf("[GraphRAG] With args: %v", args))
 
 	// Use db.Query (non-context) to avoid prepared statement reuse
 	rows, err := q.db.Query(query, args...)
@@ -108,14 +107,14 @@ func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria)
 
 		err := rows.Scan(&result.PersonID, &propsJSON)
 		if err != nil {
-			log.Printf("[GraphRAG] Scan error: %v", err)
+			slog.Error(fmt.Sprintf("[GraphRAG] Scan error: %v", err))
 			continue
 		}
 
 		// Parse properties
 		var props map[string]interface{}
 		if err := json.Unmarshal(propsJSON, &props); err != nil {
-			log.Printf("[GraphRAG] JSON unmarshal error: %v", err)
+			slog.Error(fmt.Sprintf("[GraphRAG] JSON unmarshal error: %v", err))
 			continue
 		}
 
@@ -146,7 +145,7 @@ func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria)
 		return results[i].MatchScore > results[j].MatchScore
 	})
 
-	log.Printf("[GraphRAG] Found %d candidates", len(results))
+	slog.Info(fmt.Sprintf("[GraphRAG] Found %d candidates", len(results)))
 	return results, nil
 }
 

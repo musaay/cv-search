@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -24,14 +26,16 @@ func main() {
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		log.Fatal("DATABASE_URL is required")
+		slog.Error(fmt.Sprint("DATABASE_URL is required"))
+		os.Exit(1)
 	}
 
 	llmProvider := os.Getenv("LLM_PROVIDER")
 	llmModel := os.Getenv("LLM_MODEL")
 
 	if llmProvider == "" || llmProvider == "none" {
-		log.Fatal("LLM_PROVIDER must be set (e.g. openai|ollama|groq) and configured")
+		slog.Error(fmt.Sprint("LLM_PROVIDER must be set (e.g. openai|ollama|groq) and configured"))
+		os.Exit(1)
 	}
 
 	var llmAPIKey string
@@ -44,14 +48,14 @@ func main() {
 		log.Fatalf("API key not set for provider %q (set GROQ_API_KEY or OPENAI_API_KEY)", llmProvider)
 	}
 
-	log.Printf("Connecting to DB...")
+	slog.Info(fmt.Sprintf("Connecting to DB..."))
 	db, err := storage.NewDB(dbURL)
 	if err != nil {
 		log.Fatalf("failed to connect to db: %v", err)
 	}
 	defer db.Close()
 
-	log.Printf("Creating LLM service (provider=%s, model=%s)", llmProvider, llmModel)
+	slog.Info(fmt.Sprintf("Creating LLM service (provider=%s, model=%s)", llmProvider, llmModel))
 	llmSvc := llm.NewService(llmProvider, llmAPIKey, llmModel)
 
 	ctx := context.Background()
@@ -73,13 +77,13 @@ func main() {
 	for rows.Next() {
 		var r nodeRow
 		if err := rows.Scan(&r.id, &r.nodeID, &r.properties); err != nil {
-			log.Printf("row scan error: %v", err)
+			slog.Error(fmt.Sprintf("row scan error: %v", err))
 			continue
 		}
 		candidates = append(candidates, r)
 	}
 
-	log.Printf("Found %d person nodes with empty current_position (limit %d)", len(candidates), limit)
+	slog.Info(fmt.Sprintf("Found %d person nodes with empty current_position (limit %d)", len(candidates), limit))
 
 	type backfillItem struct {
 		nr         nodeRow
@@ -91,7 +95,7 @@ func main() {
 		// parse properties to find references to CV or candidate id
 		var props map[string]interface{}
 		if err := json.Unmarshal(nr.properties, &props); err != nil {
-			log.Printf("failed to unmarshal properties for node %s: %v", nr.nodeID, err)
+			slog.Error(fmt.Sprintf("failed to unmarshal properties for node %s: %v", nr.nodeID, err))
 			continue
 		}
 
@@ -178,7 +182,7 @@ func main() {
 		}
 
 		if parsedText == "" {
-			log.Printf("No CV found for node %s (id=%d) — skipping", nr.nodeID, nr.id)
+			slog.Info(fmt.Sprintf("No CV found for node %s (id=%d) — skipping", nr.nodeID, nr.id))
 			continue
 		}
 
@@ -186,7 +190,7 @@ func main() {
 	}
 
 	if len(items) == 0 {
-		log.Println("No nodes with a resolvable CV to backfill.")
+		slog.Info("No nodes with a resolvable CV to backfill.")
 		return
 	}
 
@@ -205,7 +209,7 @@ func main() {
 	}
 
 	if !dryRun && llmProvider == "groq" && len(items) > batchThreshold {
-		log.Printf("Submitting %d CVs as a Groq Batch API job (threshold=%d)...", len(items), batchThreshold)
+		slog.Info(fmt.Sprintf("Submitting %d CVs as a Groq Batch API job (threshold=%d)...", len(items), batchThreshold))
 		batchItems := make(map[string]string, len(items))
 		for _, it := range items {
 			batchItems[it.nr.nodeID] = it.parsedText
@@ -213,19 +217,19 @@ func main() {
 
 		groqBatchID, _, err := llmSvc.SubmitExtractionBatch(batchItems, "24h")
 		if err != nil {
-			log.Printf("Groq batch submission failed, falling back to synchronous processing for all %d items: %v", len(items), err)
+			slog.Error(fmt.Sprintf("Groq batch submission failed, falling back to synchronous processing for all %d items: %v", len(items), err))
 		} else {
-			log.Printf("Batch submitted: %s — polling every 30s until complete...", groqBatchID)
+			slog.Info(fmt.Sprintf("Batch submitted: %s — polling every 30s until complete...", groqBatchID))
 
 			var outputFileID string
 			for {
 				time.Sleep(30 * time.Second)
 				status, err := llmSvc.GetGroqBatchStatus(groqBatchID)
 				if err != nil {
-					log.Printf("  status check failed: %v (retrying)", err)
+					slog.Error(fmt.Sprintf("  status check failed: %v (retrying)", err))
 					continue
 				}
-				log.Printf("  batch status=%s (%d/%d completed)", status.Status, status.RequestCounts.Completed, status.RequestCounts.Total)
+				slog.Info(fmt.Sprintf("  batch status=%s (%d/%d completed)", status.Status, status.RequestCounts.Completed, status.RequestCounts.Total))
 				if status.Status == "completed" || status.Status == "failed" || status.Status == "expired" || status.Status == "cancelled" {
 					outputFileID = status.OutputFileID
 					break
@@ -235,13 +239,13 @@ func main() {
 			if outputFileID != "" {
 				results, lineErrors, err := llmSvc.FetchExtractionBatchResults(outputFileID)
 				if err != nil {
-					log.Printf("  failed to fetch batch results: %v", err)
+					slog.Error(fmt.Sprintf("  failed to fetch batch results: %v", err))
 				}
 				for customID, extraction := range results {
 					extractions[customID] = extraction
 				}
 				for customID, msg := range lineErrors {
-					log.Printf("  batch line failed for node %s: %s (will retry synchronously)", customID, msg)
+					slog.Info(fmt.Sprintf("  batch line failed for node %s: %s (will retry synchronously)", customID, msg))
 				}
 			}
 		}
@@ -258,31 +262,31 @@ func main() {
 			var err error
 			extraction, err = llmSvc.ExtractEntities(it.parsedText)
 			if err != nil {
-				log.Printf("LLM extraction failed for node %s: %v", it.nr.nodeID, err)
+				slog.Error(fmt.Sprintf("LLM extraction failed for node %s: %v", it.nr.nodeID, err))
 				continue
 			}
 		}
 
 		pos := strings.TrimSpace(extraction.Candidate.CurrentPosition)
 		if pos == "" {
-			log.Printf("LLM did not extract a current_position for node %s", it.nr.nodeID)
+			slog.Info(fmt.Sprintf("LLM did not extract a current_position for node %s", it.nr.nodeID))
 			continue
 		}
 
-		log.Printf("Node %s -> predicted current_position: %s", it.nr.nodeID, pos)
+		slog.Info(fmt.Sprintf("Node %s -> predicted current_position: %s", it.nr.nodeID, pos))
 
 		if dryRun {
-			log.Printf("[dry-run] Would update node %s: set current_position='%s'", it.nr.nodeID, pos)
+			slog.Info(fmt.Sprintf("[dry-run] Would update node %s: set current_position='%s'", it.nr.nodeID, pos))
 			continue
 		}
 
 		// Persist into graph_nodes.properties JSONB
 		upd := `UPDATE graph_nodes SET properties = jsonb_set(properties, '{current_position}', to_jsonb($1::text), true) WHERE node_id = $2`
 		if _, err := db.GetConnection().ExecContext(ctx, upd, pos, it.nr.nodeID); err != nil {
-			log.Printf("failed to update node %s: %v", it.nr.nodeID, err)
+			slog.Error(fmt.Sprintf("failed to update node %s: %v", it.nr.nodeID, err))
 			continue
 		}
 	}
 
-	log.Printf("Backfill run complete")
+	slog.Info(fmt.Sprintf("Backfill run complete"))
 }

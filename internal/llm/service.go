@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -144,7 +144,7 @@ func (s *Service) Generate(prompt string) (string, error) {
 	}
 
 	if err != nil && s.fallback != nil {
-		log.Printf("[LLM] Primary provider (%s) failed: %v. Falling back to %s", s.provider, err, s.fallback.provider)
+		slog.Error(fmt.Sprintf("[LLM] Primary provider (%s) failed: %v. Falling back to %s", s.provider, err, s.fallback.provider))
 		return s.fallback.Generate(prompt)
 	}
 
@@ -175,7 +175,7 @@ func (s *Service) ExtractEntities(cvText string) (*CVExtraction, error) {
 	}
 
 	if err != nil && s.fallback != nil {
-		log.Printf("[LLM] Primary provider (%s) failed for CV extraction: %v. Falling back to %s", s.provider, err, s.fallback.provider)
+		slog.Error(fmt.Sprintf("[LLM] Primary provider (%s) failed for CV extraction: %v. Falling back to %s", s.provider, err, s.fallback.provider))
 		return s.fallback.ExtractEntities(cvText)
 	}
 
@@ -330,9 +330,9 @@ func (s *Service) callOpenAI(prompt string) (string, error) {
 }
 
 func (s *Service) callOllama(prompt string) (string, error) {
-	log.Printf("[DEBUG] Calling Ollama with model: %s", s.model)
-	log.Printf("[DEBUG] Prompt length: %d characters", len(prompt))
-	log.Printf("[DEBUG] Timeout: %v", s.timeout)
+	slog.Info(fmt.Sprintf("[DEBUG] Calling Ollama with model: %s", s.model))
+	slog.Info(fmt.Sprintf("[DEBUG] Prompt length: %d characters", len(prompt)))
+	slog.Info(fmt.Sprintf("[DEBUG] Timeout: %v", s.timeout))
 
 	reqBody := map[string]interface{}{
 		"model":  s.model,
@@ -345,7 +345,7 @@ func (s *Service) callOllama(prompt string) (string, error) {
 	}
 
 	jsonData, _ := json.Marshal(reqBody)
-	log.Printf("[DEBUG] Request body size: %d bytes", len(jsonData))
+	slog.Info(fmt.Sprintf("[DEBUG] Request body size: %d bytes", len(jsonData)))
 
 	req, err := http.NewRequest("POST",
 		"http://localhost:11434/api/generate",
@@ -356,22 +356,22 @@ func (s *Service) callOllama(prompt string) (string, error) {
 
 	req.Header.Set("Content-Type", "application/json")
 
-	log.Printf("[DEBUG] Sending request to Ollama...")
+	slog.Info(fmt.Sprintf("[DEBUG] Sending request to Ollama..."))
 	startTime := time.Now()
 
 	client := &http.Client{Timeout: s.timeout}
 	resp, err := client.Do(req)
 
 	elapsed := time.Since(startTime)
-	log.Printf("[DEBUG] Ollama request took: %v", elapsed)
+	slog.Info(fmt.Sprintf("[DEBUG] Ollama request took: %v", elapsed))
 
 	if err != nil {
-		log.Printf("[ERROR] Ollama request failed after %v: %v", elapsed, err)
+		slog.Error(fmt.Sprintf("[ERROR] Ollama request failed after %v: %v", elapsed, err))
 		return "", fmt.Errorf("Ollama connection failed (is Ollama running?): %w", err)
 	}
 	defer resp.Body.Close()
 
-	log.Printf("[DEBUG] Ollama response status: %d", resp.StatusCode)
+	slog.Info(fmt.Sprintf("[DEBUG] Ollama response status: %d", resp.StatusCode))
 
 	var result struct {
 		Response string `json:"response"`
@@ -380,17 +380,17 @@ func (s *Service) callOllama(prompt string) (string, error) {
 
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	if err != nil {
-		log.Printf("[ERROR] Failed to decode Ollama response: %v", err)
+		slog.Error(fmt.Sprintf("[ERROR] Failed to decode Ollama response: %v", err))
 		return "", err
 	}
 
 	if result.Error != "" {
-		log.Printf("[ERROR] Ollama returned error: %s", result.Error)
+		slog.Error(fmt.Sprintf("[ERROR] Ollama returned error: %s", result.Error))
 		return "", fmt.Errorf("Ollama error: %s", result.Error)
 	}
 
-	log.Printf("[DEBUG] Ollama response length: %d characters", len(result.Response))
-	log.Printf("[DEBUG] Ollama response preview: %.200s...", result.Response)
+	slog.Info(fmt.Sprintf("[DEBUG] Ollama response length: %d characters", len(result.Response)))
+	slog.Info(fmt.Sprintf("[DEBUG] Ollama response preview: %.200s...", result.Response))
 
 	return result.Response, nil
 }
@@ -428,7 +428,7 @@ func (s *Service) callGroq(prompt string, maxWait time.Duration) (string, error)
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			log.Printf("[Groq] Retry attempt %d/%d", attempt, maxRetries)
+			slog.Info(fmt.Sprintf("[Groq] Retry attempt %d/%d", attempt, maxRetries))
 		}
 
 		// Proactively pace requests to stay under Groq's RPM instead of
@@ -451,14 +451,14 @@ func (s *Service) callGroq(prompt string, maxWait time.Duration) (string, error)
 		startTime := time.Now()
 		resp, err := client.Do(req)
 		elapsed := time.Since(startTime)
-		log.Printf("[Groq] Request took: %v (attempt %d)", elapsed, attempt+1)
+		slog.Info(fmt.Sprintf("[Groq] Request took: %v (attempt %d)", elapsed, attempt+1))
 
 		if err != nil {
 			if attempt == maxRetries {
 				return "", fmt.Errorf("Groq API error after %d attempts: %w", maxRetries+1, err)
 			}
 			waitDur := time.Duration(1<<attempt) * time.Second
-			log.Printf("[Groq] Network error, retrying in %v: %v", waitDur, err)
+			slog.Error(fmt.Sprintf("[Groq] Network error, retrying in %v: %v", waitDur, err))
 			time.Sleep(waitDur)
 			continue
 		}
@@ -482,7 +482,7 @@ func (s *Service) callGroq(prompt string, maxWait time.Duration) (string, error)
 			if waitDur > maxWait {
 				return "", fmt.Errorf("Groq rate limited (429) and requested a retry wait duration of %v which exceeds the %v cap for this call", waitDur, maxWait)
 			}
-			log.Printf("[Groq] Rate limited (429), waiting %v before retry...", waitDur)
+			slog.Info(fmt.Sprintf("[Groq] Rate limited (429), waiting %v before retry...", waitDur))
 			time.Sleep(waitDur)
 			continue
 		}
@@ -495,7 +495,7 @@ func (s *Service) callGroq(prompt string, maxWait time.Duration) (string, error)
 				return "", fmt.Errorf("Groq API error %d: %s", resp.StatusCode, string(body))
 			}
 			waitDur := time.Duration(1<<attempt) * time.Second
-			log.Printf("[Groq] HTTP %d, retrying in %v", resp.StatusCode, waitDur)
+			slog.Info(fmt.Sprintf("[Groq] HTTP %d, retrying in %v", resp.StatusCode, waitDur))
 			time.Sleep(waitDur)
 			continue
 		}
@@ -521,7 +521,7 @@ func (s *Service) callGroq(prompt string, maxWait time.Duration) (string, error)
 			return "", fmt.Errorf("no response from Groq")
 		}
 
-		log.Printf("[Groq] Response length: %d chars", len(result.Choices[0].Message.Content))
+		slog.Info(fmt.Sprintf("[Groq] Response length: %d chars", len(result.Choices[0].Message.Content)))
 		return result.Choices[0].Message.Content, nil
 	}
 

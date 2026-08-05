@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -45,21 +45,21 @@ func (a *API) StartBackgroundWorkers() {
 	// Scheduled Community Detection Worker (Full Rebuild)
 	go a.scheduledCommunityDetectionWorker()
 
-	log.Println("[BackgroundJobs] Workers started (CV processing + embeddings + batch poller)")
+	slog.Info("[BackgroundJobs] Workers started (CV processing + embeddings + batch poller)")
 }
 
 // embeddingWorker processes embedding jobs from the queue
 func (a *API) embeddingWorker() {
-	log.Println("[EmbeddingWorker] Started")
+	slog.Info("[EmbeddingWorker] Started")
 
 	for job := range a.embeddingQueue {
-		log.Printf("[EmbeddingWorker] Processing job for CV %d (%d nodes)", job.CVID, len(job.NodeIDs))
+		slog.Info(fmt.Sprintf("[EmbeddingWorker] Processing job for CV %d (%d nodes)", job.CVID, len(job.NodeIDs)))
 
 		ctx := context.Background()
 
 		// Check if enhanced search engine is available
 		if a.enhancedSearchEngine == nil || a.enhancedSearchEngine.GetEmbeddingService() == nil {
-			log.Printf("[EmbeddingWorker] Enhanced search engine not available, skipping embeddings for CV %d", job.CVID)
+			slog.Info(fmt.Sprintf("[EmbeddingWorker] Enhanced search engine not available, skipping embeddings for CV %d", job.CVID))
 			continue
 		}
 
@@ -72,7 +72,7 @@ func (a *API) embeddingWorker() {
 		for i, nodeID := range job.NodeIDs {
 			err := embeddingService.EmbedNode(ctx, nodeID)
 			if err != nil {
-				log.Printf("[EmbeddingWorker] Failed to embed node %s: %v", nodeID, err)
+				slog.Error(fmt.Sprintf("[EmbeddingWorker] Failed to embed node %s: %v", nodeID, err))
 				failCount++
 			} else {
 				successCount++
@@ -87,13 +87,13 @@ func (a *API) embeddingWorker() {
 
 			// Progress logging every 5 nodes
 			if (i+1)%5 == 0 {
-				log.Printf("[EmbeddingWorker] Progress: %d/%d nodes embedded", i+1, len(job.NodeIDs))
+				slog.Info(fmt.Sprintf("[EmbeddingWorker] Progress: %d/%d nodes embedded", i+1, len(job.NodeIDs)))
 			}
 		}
 
 		duration := time.Since(job.Timestamp)
-		log.Printf("[EmbeddingWorker] Completed CV %d: %d success, %d failed (took %v)",
-			job.CVID, successCount, failCount, duration)
+		slog.Info(fmt.Sprintf("[EmbeddingWorker] Completed CV %d: %d success, %d failed (took %v)",
+			job.CVID, successCount, failCount, duration))
 
 		// After embeddings are ready, incrementally assign the candidate to the closest community
 		// to avoid full re-clustering on every upload.
@@ -106,7 +106,7 @@ func (a *API) embeddingWorker() {
 		}
 		if personNodeID != "" && a.enhancedSearchEngine != nil {
 			if err := a.enhancedSearchEngine.GetCommunityDetector().AssignToClosestCommunity(ctx, personNodeID); err != nil {
-				log.Printf("[EmbeddingWorker] Failed to assign %s to community: %v", personNodeID, err)
+				slog.Error(fmt.Sprintf("[EmbeddingWorker] Failed to assign %s to community: %v", personNodeID, err))
 			}
 		}
 	}
@@ -114,55 +114,55 @@ func (a *API) embeddingWorker() {
 
 // cvProcessingWorker processes CV upload jobs from the queue
 func (a *API) cvProcessingWorker() {
-	log.Println("[CVProcessingWorker] Started")
+	slog.Info("[CVProcessingWorker] Started")
 
 	for job := range a.cvProcessingQueue {
-		log.Printf("[CVProcessingWorker] Processing job %d (CV file %d)", job.JobID, job.CVFileID)
+		slog.Info(fmt.Sprintf("[CVProcessingWorker] Processing job %d (CV file %d)", job.JobID, job.CVFileID))
 
 		ctx := context.Background()
 
 		// Update job status to processing
 		if err := a.db.UpdateJobStatus(ctx, job.JobID, "processing", nil); err != nil {
-			log.Printf("[CVProcessingWorker] Failed to update job status: %v", err)
+			slog.Error(fmt.Sprintf("[CVProcessingWorker] Failed to update job status: %v", err))
 			continue
 		}
 
 		// Check if LLM service is available
 		if a.llmService == nil {
 			errMsg := "LLM service not available"
-			log.Printf("[CVProcessingWorker] Job %d failed: %s", job.JobID, errMsg)
+			slog.Info(fmt.Sprintf("[CVProcessingWorker] Job %d failed: %s", job.JobID, errMsg))
 			a.db.UpdateJobStatus(ctx, job.JobID, "failed", &errMsg)
 			continue
 		}
 
 		// Extract entities using LLM
-		log.Printf("[CVProcessingWorker] Extracting entities for job %d...", job.JobID)
+		slog.Info(fmt.Sprintf("[CVProcessingWorker] Extracting entities for job %d...", job.JobID))
 		extraction, err := a.llmService.ExtractEntities(job.CVText)
 		if err != nil {
 			retryCount, maxRetries, rcErr := a.db.IncrementJobRetryCount(ctx, job.JobID)
 			if rcErr == nil && retryCount < maxRetries {
 				backoff := time.Duration(retryCount) * 30 * time.Second
-				log.Printf("[CVProcessingWorker] Job %d failed (attempt %d/%d): %v — retrying in %v",
-					job.JobID, retryCount, maxRetries, err, backoff)
+				slog.Error(fmt.Sprintf("[CVProcessingWorker] Job %d failed (attempt %d/%d): %v — retrying in %v",
+					job.JobID, retryCount, maxRetries, err, backoff))
 				if statusErr := a.db.UpdateJobStatus(ctx, job.JobID, "pending", nil); statusErr != nil {
-					log.Printf("[CVProcessingWorker] Failed to reset job %d to pending: %v", job.JobID, statusErr)
+					slog.Info(fmt.Sprintf("[CVProcessingWorker] Failed to reset job %d to pending: %v", job.JobID, statusErr))
 				}
 				a.requeueCVProcessingJob(job, backoff)
 				continue
 			}
 			errMsg := fmt.Sprintf("LLM extraction failed after %d attempt(s): %v", retryCount, err)
-			log.Printf("[CVProcessingWorker] Job %d permanently failed: %s", job.JobID, errMsg)
+			slog.Info(fmt.Sprintf("[CVProcessingWorker] Job %d permanently failed: %s", job.JobID, errMsg))
 			a.db.UpdateJobStatus(ctx, job.JobID, "failed", &errMsg)
 			continue
 		}
 
-		log.Printf("[CVProcessingWorker] Job %d: Extracted %d skills, %d companies, %d education entries",
-			job.JobID, len(extraction.Skills), len(extraction.Companies), len(extraction.Education))
+		slog.Info(fmt.Sprintf("[CVProcessingWorker] Job %d: Extracted %d skills, %d companies, %d education entries",
+			job.JobID, len(extraction.Skills), len(extraction.Companies), len(extraction.Education)))
 
 		a.applyExtraction(ctx, job.JobID, job.CVFileID, extraction)
 
 		duration := time.Since(job.Timestamp)
-		log.Printf("[CVProcessingWorker] Job %d completed successfully (took %v)", job.JobID, duration)
+		slog.Info(fmt.Sprintf("[CVProcessingWorker] Job %d completed successfully (took %v)", job.JobID, duration))
 	}
 }
 
@@ -188,7 +188,7 @@ func (a *API) applyExtraction(ctx context.Context, jobID, cvFileID int64, extrac
 
 	// Build graph from extraction
 	if a.graphBuilder != nil {
-		log.Printf("[ApplyExtraction] Building knowledge graph for job %d...", jobID)
+		slog.Info(fmt.Sprintf("[ApplyExtraction] Building knowledge graph for job %d...", jobID))
 
 		extractionMap := map[string]interface{}{
 			"candidate": map[string]interface{}{
@@ -203,29 +203,29 @@ func (a *API) applyExtraction(ctx context.Context, jobID, cvFileID int64, extrac
 		}
 
 		if newNodeIDs, err := a.graphBuilder.BuildFromLLMExtraction(ctx, int(cvFileID), extractionMap); err != nil {
-			log.Printf("[ApplyExtraction] Graph building failed for job %d: %v", jobID, err)
+			slog.Error(fmt.Sprintf("[ApplyExtraction] Graph building failed for job %d: %v", jobID, err))
 		} else {
-			log.Printf("[ApplyExtraction] Job %d: Graph built successfully", jobID)
+			slog.Info(fmt.Sprintf("[ApplyExtraction] Job %d: Graph built successfully", jobID))
 
 			// Link candidate record to the newly built person graph node
 			candidateName := extraction.Candidate.Name
 			if candidateName != "" {
 				personNodeID, lookupErr := a.db.GetPersonGraphNodeIDByName(ctx, candidateName)
 				if lookupErr != nil {
-					log.Printf("[ApplyExtraction] Job %d: Failed to look up person node: %v", jobID, lookupErr)
+					slog.Info(fmt.Sprintf("[ApplyExtraction] Job %d: Failed to look up person node: %v", jobID, lookupErr))
 				} else if personNodeID > 0 {
 					candidateID, upsertErr := a.db.UpsertCandidateForGraphNode(ctx, personNodeID, candidateName)
 					if upsertErr != nil {
-						log.Printf("[ApplyExtraction] Job %d: Failed to upsert candidate: %v", jobID, upsertErr)
+						slog.Info(fmt.Sprintf("[ApplyExtraction] Job %d: Failed to upsert candidate: %v", jobID, upsertErr))
 					} else {
 						if linkErr := a.db.UpdateCVFileCandidateID(ctx, cvFileID, candidateID); linkErr != nil {
-							log.Printf("[ApplyExtraction] Job %d: Failed to link cv_file to candidate: %v", jobID, linkErr)
+							slog.Info(fmt.Sprintf("[ApplyExtraction] Job %d: Failed to link cv_file to candidate: %v", jobID, linkErr))
 						}
 						// Sync experience + skills into candidates for BM25 search
 						if syncErr := a.db.SyncCandidateTextFields(ctx, candidateID, personNodeID); syncErr != nil {
-							log.Printf("[ApplyExtraction] Job %d: Failed to sync candidate text fields: %v", jobID, syncErr)
+							slog.Info(fmt.Sprintf("[ApplyExtraction] Job %d: Failed to sync candidate text fields: %v", jobID, syncErr))
 						}
-						log.Printf("[ApplyExtraction] Job %d: Candidate %d linked to node %d", jobID, candidateID, personNodeID)
+						slog.Info(fmt.Sprintf("[ApplyExtraction] Job %d: Candidate %d linked to node %d", jobID, candidateID, personNodeID))
 					}
 				}
 			}
@@ -233,14 +233,14 @@ func (a *API) applyExtraction(ctx context.Context, jobID, cvFileID int64, extrac
 			// Queue background embedding job for newly created nodes
 			if len(newNodeIDs) > 0 {
 				a.QueueEmbeddingJob(cvFileID, newNodeIDs)
-				log.Printf("[ApplyExtraction] Job %d: Queued %d nodes for embedding", jobID, len(newNodeIDs))
+				slog.Info(fmt.Sprintf("[ApplyExtraction] Job %d: Queued %d nodes for embedding", jobID, len(newNodeIDs)))
 			}
 		}
 	}
 
 	// Mark job as completed
 	if err := a.db.UpdateJobStatus(ctx, jobID, "completed", nil); err != nil {
-		log.Printf("[ApplyExtraction] Failed to mark job %d as completed: %v", jobID, err)
+		slog.Error(fmt.Sprintf("[ApplyExtraction] Failed to mark job %d as completed: %v", jobID, err))
 	}
 }
 
@@ -248,7 +248,7 @@ func (a *API) applyExtraction(ctx context.Context, jobID, cvFileID int64, extrac
 // Returns true if the job was queued, false if the queue was full.
 func (a *API) queueCVProcessingJob(jobID, cvFileID int64, cvText string) bool {
 	if a.cvProcessingQueue == nil {
-		log.Printf("[BackgroundJobs] CV processing queue not initialized, skipping job %d", jobID)
+		slog.Info(fmt.Sprintf("[BackgroundJobs] CV processing queue not initialized, skipping job %d", jobID))
 		return false
 	}
 
@@ -262,10 +262,10 @@ func (a *API) queueCVProcessingJob(jobID, cvFileID int64, cvText string) bool {
 	// Non-blocking send
 	select {
 	case a.cvProcessingQueue <- job:
-		log.Printf("[BackgroundJobs] Queued CV processing job %d (CV file %d)", jobID, cvFileID)
+		slog.Info(fmt.Sprintf("[BackgroundJobs] Queued CV processing job %d (CV file %d)", jobID, cvFileID))
 		return true
 	default:
-		log.Printf("[BackgroundJobs] Queue full! Dropping CV processing job %d", jobID)
+		slog.Info(fmt.Sprintf("[BackgroundJobs] Queue full! Dropping CV processing job %d", jobID))
 		// Update job status to failed
 		ctx := context.Background()
 		errMsg := "Queue full, job dropped"
@@ -283,9 +283,9 @@ func (a *API) requeueCVProcessingJob(job CVProcessingJob, delay time.Duration) {
 
 		select {
 		case a.cvProcessingQueue <- job:
-			log.Printf("[BackgroundJobs] Requeued CV processing job %d after %v backoff", job.JobID, delay)
+			slog.Info(fmt.Sprintf("[BackgroundJobs] Requeued CV processing job %d after %v backoff", job.JobID, delay))
 		default:
-			log.Printf("[BackgroundJobs] Queue full on requeue! Dropping CV processing job %d", job.JobID)
+			slog.Info(fmt.Sprintf("[BackgroundJobs] Queue full on requeue! Dropping CV processing job %d", job.JobID))
 			ctx := context.Background()
 			errMsg := "Queue full on retry, job dropped"
 			a.db.UpdateJobStatus(ctx, job.JobID, "failed", &errMsg)
@@ -296,7 +296,7 @@ func (a *API) requeueCVProcessingJob(job CVProcessingJob, delay time.Duration) {
 // QueueEmbeddingJob adds a new embedding job to the background queue
 func (a *API) QueueEmbeddingJob(cvID int64, nodeIDs []string) {
 	if a.embeddingQueue == nil {
-		log.Printf("[BackgroundJobs] Embedding queue not initialized, skipping CV %d", cvID)
+		slog.Info(fmt.Sprintf("[BackgroundJobs] Embedding queue not initialized, skipping CV %d", cvID))
 		return
 	}
 
@@ -309,9 +309,9 @@ func (a *API) QueueEmbeddingJob(cvID int64, nodeIDs []string) {
 	// Non-blocking send
 	select {
 	case a.embeddingQueue <- job:
-		log.Printf("[BackgroundJobs] Queued embedding job for CV %d (%d nodes)", cvID, len(nodeIDs))
+		slog.Info(fmt.Sprintf("[BackgroundJobs] Queued embedding job for CV %d (%d nodes)", cvID, len(nodeIDs)))
 	default:
-		log.Printf("[BackgroundJobs] Queue full! Dropping embedding job for CV %d", cvID)
+		slog.Info(fmt.Sprintf("[BackgroundJobs] Queue full! Dropping embedding job for CV %d", cvID))
 	}
 }
 
@@ -364,13 +364,13 @@ func (a *API) SubmitCVExtractionBatch(ctx context.Context, jobs []CVProcessingJo
 	}
 
 	if _, dbErr := a.db.CreateGroqBatchJob(ctx, groqBatchID, inputFileID, len(items)); dbErr != nil {
-		log.Printf("[GroqBatch] Warning: failed to record batch job %s: %v", groqBatchID, dbErr)
+		slog.Info(fmt.Sprintf("[GroqBatch] Warning: failed to record batch job %s: %v", groqBatchID, dbErr))
 	}
 	if dbErr := a.db.LinkJobsToGroqBatch(ctx, groqBatchID, jobIDs); dbErr != nil {
-		log.Printf("[GroqBatch] Warning: failed to link jobs to batch %s: %v", groqBatchID, dbErr)
+		slog.Info(fmt.Sprintf("[GroqBatch] Warning: failed to link jobs to batch %s: %v", groqBatchID, dbErr))
 	}
 
-	log.Printf("[GroqBatch] Submitted batch %s with %d CVs (input_file=%s)", groqBatchID, len(items), inputFileID)
+	slog.Info(fmt.Sprintf("[GroqBatch] Submitted batch %s with %d CVs (input_file=%s)", groqBatchID, len(items), inputFileID))
 	return groqBatchID, nil
 }
 
@@ -380,7 +380,7 @@ func (a *API) SubmitCVExtractionBatch(ctx context.Context, jobs []CVProcessingJo
 // missing or failed within the batch falls back to the normal real-time queue
 // instead of getting stuck.
 func (a *API) groqBatchPollWorker() {
-	log.Println("[GroqBatchPoller] Started")
+	slog.Info("[GroqBatchPoller] Started")
 	ticker := time.NewTicker(groqBatchPollInterval)
 	defer ticker.Stop()
 
@@ -388,7 +388,7 @@ func (a *API) groqBatchPollWorker() {
 		ctx := context.Background()
 		batches, err := a.db.ListOpenGroqBatchJobs(ctx)
 		if err != nil {
-			log.Printf("[GroqBatchPoller] Failed to list open batches: %v", err)
+			slog.Error(fmt.Sprintf("[GroqBatchPoller] Failed to list open batches: %v", err))
 			continue
 		}
 		for _, b := range batches {
@@ -402,7 +402,7 @@ func (a *API) groqBatchPollWorker() {
 func (a *API) pollGroqBatch(ctx context.Context, groqBatchID string) {
 	status, err := a.llmService.GetGroqBatchStatus(groqBatchID)
 	if err != nil {
-		log.Printf("[GroqBatchPoller] Failed to get status for batch %s: %v", groqBatchID, err)
+		slog.Error(fmt.Sprintf("[GroqBatchPoller] Failed to get status for batch %s: %v", groqBatchID, err))
 		return
 	}
 
@@ -414,11 +414,11 @@ func (a *API) pollGroqBatch(ctx context.Context, groqBatchID string) {
 		errorFileID = &status.ErrorFileID
 	}
 	if dbErr := a.db.UpdateGroqBatchJobStatus(ctx, groqBatchID, status.Status, outputFileID, errorFileID); dbErr != nil {
-		log.Printf("[GroqBatchPoller] Failed to update batch %s status: %v", groqBatchID, dbErr)
+		slog.Info(fmt.Sprintf("[GroqBatchPoller] Failed to update batch %s status: %v", groqBatchID, dbErr))
 	}
 
-	log.Printf("[GroqBatchPoller] Batch %s status=%s (%d/%d completed)",
-		groqBatchID, status.Status, status.RequestCounts.Completed, status.RequestCounts.Total)
+	slog.Info(fmt.Sprintf("[GroqBatchPoller] Batch %s status=%s (%d/%d completed)",
+		groqBatchID, status.Status, status.RequestCounts.Completed, status.RequestCounts.Total))
 
 	terminal := status.Status == "completed" || status.Status == "failed" ||
 		status.Status == "expired" || status.Status == "cancelled"
@@ -428,7 +428,7 @@ func (a *API) pollGroqBatch(ctx context.Context, groqBatchID string) {
 
 	jobsByCVFileID, err := a.db.GetJobsByGroqBatchID(ctx, groqBatchID)
 	if err != nil {
-		log.Printf("[GroqBatchPoller] Failed to load jobs for batch %s: %v", groqBatchID, err)
+		slog.Error(fmt.Sprintf("[GroqBatchPoller] Failed to load jobs for batch %s: %v", groqBatchID, err))
 		return
 	}
 
@@ -437,7 +437,7 @@ func (a *API) pollGroqBatch(ctx context.Context, groqBatchID string) {
 	if status.OutputFileID != "" {
 		results, lineErrors, err = a.llmService.FetchExtractionBatchResults(status.OutputFileID)
 		if err != nil {
-			log.Printf("[GroqBatchPoller] Failed to fetch results for batch %s: %v", groqBatchID, err)
+			slog.Error(fmt.Sprintf("[GroqBatchPoller] Failed to fetch results for batch %s: %v", groqBatchID, err))
 		}
 	}
 
@@ -445,7 +445,7 @@ func (a *API) pollGroqBatch(ctx context.Context, groqBatchID string) {
 		customID := fmt.Sprintf("%d", cvFileID)
 
 		if extraction, ok := results[customID]; ok {
-			log.Printf("[GroqBatchPoller] Applying batch result for job %d (CV %d)", jobID, cvFileID)
+			slog.Info(fmt.Sprintf("[GroqBatchPoller] Applying batch result for job %d (CV %d)", jobID, cvFileID))
 			a.applyExtraction(ctx, jobID, cvFileID, extraction)
 			continue
 		}
@@ -453,9 +453,9 @@ func (a *API) pollGroqBatch(ctx context.Context, groqBatchID string) {
 		// Missing or errored in the batch — self-heal via the real-time queue
 		// instead of leaving the job stuck in "batch_submitted".
 		if msg, ok := lineErrors[customID]; ok {
-			log.Printf("[GroqBatchPoller] Batch line failed for job %d (CV %d): %s — falling back to real-time queue", jobID, cvFileID, msg)
+			slog.Info(fmt.Sprintf("[GroqBatchPoller] Batch line failed for job %d (CV %d): %s — falling back to real-time queue", jobID, cvFileID, msg))
 		} else {
-			log.Printf("[GroqBatchPoller] No result for job %d (CV %d) in batch %s — falling back to real-time queue", jobID, cvFileID, groqBatchID)
+			slog.Info(fmt.Sprintf("[GroqBatchPoller] No result for job %d (CV %d) in batch %s — falling back to real-time queue", jobID, cvFileID, groqBatchID))
 		}
 
 		texts, textErr := a.db.GetCVTextsByFileIDs(ctx, []int64{cvFileID})
@@ -484,23 +484,23 @@ func (a *API) scheduledCommunityDetectionWorker() {
 		}
 
 		sleepDuration := target.Sub(now)
-		log.Printf("[ScheduledCommunityDetect] Next full rebuild scheduled at %v (in %v)", target.Format(time.RFC3339), sleepDuration)
+		slog.Info(fmt.Sprintf("[ScheduledCommunityDetect] Next full rebuild scheduled at %v (in %v)", target.Format(time.RFC3339), sleepDuration))
 
 		time.Sleep(sleepDuration)
 
-		log.Printf("[ScheduledCommunityDetect] Starting nightly full rebuild...")
+		slog.Info(fmt.Sprintf("[ScheduledCommunityDetect] Starting nightly full rebuild..."))
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-		
+
 		a.commDetectMu.Lock()
 		a.lastCommDetect = time.Now()
 		a.commDetectMu.Unlock()
 
 		if err := a.enhancedSearchEngine.GetCommunityDetector().DetectCommunities(ctx, 0); err != nil {
-			log.Printf("[ScheduledCommunityDetect] Failed: %v", err)
+			slog.Error(fmt.Sprintf("[ScheduledCommunityDetect] Failed: %v", err))
 		} else {
-			log.Printf("[ScheduledCommunityDetect] Completed successfully")
+			slog.Info(fmt.Sprintf("[ScheduledCommunityDetect] Completed successfully"))
 		}
-		
+
 		cancel()
 	}
 }

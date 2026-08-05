@@ -15,19 +15,19 @@ type CVParser struct {
 }
 
 type ParsedCV struct {
-	Filename    string
-	FileType    string
-	FileSize    int64
-	FullText    string
-	Entities    []Entity
-	Skills      []string
-	Companies   []string
-	Education   []string
+	Filename     string
+	FileType     string
+	FileSize     int64
+	FullText     string
+	Entities     []Entity
+	Skills       []string
+	Companies    []string
+	Education    []string
 	Certificates []string
 }
 
 type Entity struct {
-	Type       string  // skill, company, education, certification
+	Type       string // skill, company, education, certification
 	Value      string
 	Confidence float64
 }

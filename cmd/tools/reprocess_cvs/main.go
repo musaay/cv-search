@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"strconv"
 
@@ -24,11 +26,13 @@ func main() {
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		log.Fatal("DATABASE_URL required")
+		slog.Error(fmt.Sprint("DATABASE_URL required"))
+		os.Exit(1)
 	}
 	openaiKey := os.Getenv("OPENAI_API_KEY")
 	if openaiKey == "" {
-		log.Fatal("OPENAI_API_KEY required")
+		slog.Error(fmt.Sprint("OPENAI_API_KEY required"))
+		os.Exit(1)
 	}
 	llmProvider := os.Getenv("LLM_PROVIDER")
 	if llmProvider == "" {

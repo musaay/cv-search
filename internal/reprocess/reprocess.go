@@ -18,7 +18,7 @@ package reprocess
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -75,7 +75,7 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 
 	whereClause := `WHERE (c.skills IS NULL OR length(c.skills) < 20
 		       OR (SELECT count(*) FROM graph_edges ge WHERE ge.source_node_id = gn.id) < 3)`
-	
+
 	if opts.ForceAll {
 		whereClause = "WHERE 1=1"
 	}
@@ -105,7 +105,7 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 		var bc brokenCandidate
 		var cvIDStr *string
 		if err := rows.Scan(&bc.CandID, &bc.Name, &bc.GraphNodeID, &bc.GraphNodeStr, &cvIDStr, &bc.EdgeCount, &bc.SkillsLen); err != nil {
-			log.Printf("[Reprocess] row scan error: %v", err)
+			slog.Error(fmt.Sprintf("[Reprocess] row scan error: %v", err))
 			continue
 		}
 		if cvIDStr != nil {
@@ -137,7 +137,7 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 			var cvFileID int
 			var filename string
 			if err := backlogRows.Scan(&cvFileID, &filename); err != nil {
-				log.Printf("[Reprocess] backlog row scan error: %v", err)
+				slog.Error(fmt.Sprintf("[Reprocess] backlog row scan error: %v", err))
 				continue
 			}
 			broken = append(broken, brokenCandidate{
@@ -151,15 +151,15 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 		if err := backlogRows.Err(); err != nil {
 			return fmt.Errorf("backlog query iteration failed: %w", err)
 		}
-		log.Printf("[Reprocess] Found %d never-processed CV(s) with no candidate (backlog)", backlogCount)
+		slog.Info(fmt.Sprintf("[Reprocess] Found %d never-processed CV(s) with no candidate (backlog)", backlogCount))
 	}
 
 	if len(broken) == 0 {
-		log.Println("[Reprocess] No broken/unprocessed candidates found.")
+		slog.Info("[Reprocess] No broken/unprocessed candidates found.")
 		return nil
 	}
 
-	log.Printf("[Reprocess] Found %d broken/unprocessed candidate(s) total:", len(broken))
+	slog.Info(fmt.Sprintf("[Reprocess] Found %d broken/unprocessed candidate(s) total:", len(broken)))
 	// Cap the per-item listing so this doesn't flood the log pipe: printing
 	// thousands of lines in under a second can exceed hosting providers'
 	// log-rate limits (e.g. Railway's 500 logs/sec) and, since log.Printf
@@ -169,15 +169,15 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 	const maxListedItems = 20
 	for i, bc := range broken {
 		if i >= maxListedItems {
-			log.Printf("[Reprocess]   ... and %d more (sample above, run report only lists the first %d)", len(broken)-maxListedItems, maxListedItems)
+			slog.Info(fmt.Sprintf("[Reprocess]   ... and %d more (sample above, run report only lists the first %d)", len(broken)-maxListedItems, maxListedItems))
 			break
 		}
-		log.Printf("[Reprocess]   [cand=%d] %-25s node=%-12s edges=%d skills=%d cv_id=%q",
-			bc.CandID, bc.Name, bc.GraphNodeStr, bc.EdgeCount, bc.SkillsLen, bc.CVIDStr)
+		slog.Info(fmt.Sprintf("[Reprocess]   [cand=%d] %-25s node=%-12s edges=%d skills=%d cv_id=%q",
+			bc.CandID, bc.Name, bc.GraphNodeStr, bc.EdgeCount, bc.SkillsLen, bc.CVIDStr))
 	}
 
 	if opts.DryRun {
-		log.Println("[Reprocess] [DRY RUN] Set DryRun=false (or -dry-run=false) to apply fixes.")
+		slog.Info("[Reprocess] [DRY RUN] Set DryRun=false (or -dry-run=false) to apply fixes.")
 		return nil
 	}
 
@@ -193,7 +193,7 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 	logSkip := func(format string, args ...interface{}) {
 		skippedTotal++
 		if skippedLogged < maxListedItems {
-			log.Printf(format, args...)
+			slog.Info(fmt.Sprintf(format, args...))
 			skippedLogged++
 		}
 	}
@@ -226,11 +226,11 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 		items = append(items, reprocessItem{bc: bc, cvFileID: cvFileID, parsedText: parsedText, currentCandidateID: currentCandidateID})
 	}
 	if skippedTotal > skippedLogged {
-		log.Printf("[Reprocess] ... %d more skipped (not logged individually)", skippedTotal-skippedLogged)
+		slog.Info(fmt.Sprintf("[Reprocess] ... %d more skipped (not logged individually)", skippedTotal-skippedLogged))
 	}
 
 	if len(items) == 0 {
-		log.Println("[Reprocess] No CVs with usable parsed_text to reprocess.")
+		slog.Info("[Reprocess] No CVs with usable parsed_text to reprocess.")
 		return nil
 	}
 
@@ -256,9 +256,9 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 	applyOne := func(it reprocessItem, extraction *llm.CVExtraction) {
 		applied[it.cvFileID] = true
 
-		log.Printf("[Reprocess] == [cand=%d] %s ==", it.bc.CandID, it.bc.Name)
-		log.Printf("[Reprocess]   Got: %d skills, %d companies, %d education",
-			len(extraction.Skills), len(extraction.Companies), len(extraction.Education))
+		slog.Info(fmt.Sprintf("[Reprocess] == [cand=%d] %s ==", it.bc.CandID, it.bc.Name))
+		slog.Info(fmt.Sprintf("[Reprocess]   Got: %d skills, %d companies, %d education",
+			len(extraction.Skills), len(extraction.Companies), len(extraction.Education)))
 
 		extractMap := map[string]interface{}{
 			"candidate": map[string]interface{}{
@@ -272,11 +272,11 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 			"education": extraction.Education,
 		}
 		if _, err := graphBuilder.BuildFromLLMExtraction(ctx, int(it.cvFileID), extractMap); err != nil {
-			log.Printf("[Reprocess]   graph build failed: %v", err)
+			slog.Error(fmt.Sprintf("[Reprocess]   graph build failed: %v", err))
 			failed++
 			return
 		}
-		log.Printf("[Reprocess]   Graph OK")
+		slog.Info(fmt.Sprintf("[Reprocess]   Graph OK"))
 
 		resolvedName := extraction.Candidate.Name
 		if resolvedName == "" {
@@ -285,29 +285,29 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 		graphNodeID, err := db.GetPersonGraphNodeIDByName(ctx, resolvedName)
 		if err != nil || graphNodeID == 0 {
 			graphNodeID = it.bc.GraphNodeID
-			log.Printf("[Reprocess]   Using existing node %d (name lookup failed for %q)", graphNodeID, resolvedName)
+			slog.Info(fmt.Sprintf("[Reprocess]   Using existing node %d (name lookup failed for %q)", graphNodeID, resolvedName))
 		}
 
 		candidateID, err := db.UpsertCandidateForGraphNode(ctx, graphNodeID, resolvedName)
 		if err != nil {
-			log.Printf("[Reprocess]   UpsertCandidateForGraphNode failed: %v", err)
+			slog.Error(fmt.Sprintf("[Reprocess]   UpsertCandidateForGraphNode failed: %v", err))
 			failed++
 			return
 		}
-		log.Printf("[Reprocess]   Candidate id=%d", candidateID)
+		slog.Info(fmt.Sprintf("[Reprocess]   Candidate id=%d", candidateID))
 
 		if it.currentCandidateID == nil {
 			if err := db.UpdateCVFileCandidateID(ctx, it.cvFileID, candidateID); err != nil {
-				log.Printf("[Reprocess]   WARNING: link cv_files failed: %v", err)
+				slog.Error(fmt.Sprintf("[Reprocess]   WARNING: link cv_files failed: %v", err))
 			} else {
-				log.Printf("[Reprocess]   cv_files id=%d -> candidate %d linked", it.cvFileID, candidateID)
+				slog.Info(fmt.Sprintf("[Reprocess]   cv_files id=%d -> candidate %d linked", it.cvFileID, candidateID))
 			}
 		}
 
 		if err := db.SyncCandidateTextFields(ctx, candidateID, graphNodeID); err != nil {
-			log.Printf("[Reprocess]   WARNING: sync failed: %v", err)
+			slog.Error(fmt.Sprintf("[Reprocess]   WARNING: sync failed: %v", err))
 		} else {
-			log.Printf("[Reprocess]   BM25 fields synced")
+			slog.Info(fmt.Sprintf("[Reprocess]   BM25 fields synced"))
 		}
 
 		// Fetch the actual node_id string fresh (rather than relying on a
@@ -317,24 +317,24 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 		if err := db.GetConnection().QueryRowContext(ctx,
 			"SELECT node_id FROM graph_nodes WHERE id = $1", graphNodeID,
 		).Scan(&nodeIDStr); err != nil {
-			log.Printf("[Reprocess]   WARNING: could not resolve node_id for embedding: %v", err)
+			slog.Error(fmt.Sprintf("[Reprocess]   WARNING: could not resolve node_id for embedding: %v", err))
 		} else {
-			log.Printf("[Reprocess]   Re-embedding %s...", nodeIDStr)
+			slog.Info(fmt.Sprintf("[Reprocess]   Re-embedding %s...", nodeIDStr))
 			embedCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			if err := embeddingSvc.EmbedNode(embedCtx, nodeIDStr); err != nil {
-				log.Printf("[Reprocess]   WARNING: embed failed: %v", err)
+				slog.Error(fmt.Sprintf("[Reprocess]   WARNING: embed failed: %v", err))
 			} else {
-				log.Printf("[Reprocess]   Embedded OK")
+				slog.Info(fmt.Sprintf("[Reprocess]   Embedded OK"))
 			}
 			cancel()
 		}
 
-		log.Printf("[Reprocess] DONE [cand=%d] %s", candidateID, it.bc.Name)
+		slog.Info(fmt.Sprintf("[Reprocess] DONE [cand=%d] %s", candidateID, it.bc.Name))
 		fixed++
 	}
 
 	if !opts.DisableBatchAPI && opts.LLMProvider == "groq" && len(items) > opts.BatchThreshold {
-		log.Printf("[Reprocess] Submitting %d CVs as a Groq Batch API job (threshold=%d)...", len(items), opts.BatchThreshold)
+		slog.Info(fmt.Sprintf("[Reprocess] Submitting %d CVs as a Groq Batch API job (threshold=%d)...", len(items), opts.BatchThreshold))
 		batchItems := make(map[string]string, len(items))
 		for _, it := range items {
 			batchItems[fmt.Sprintf("%d", it.cvFileID)] = it.parsedText
@@ -342,19 +342,19 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 
 		groqBatchID, _, err := llmSvc.SubmitExtractionBatch(batchItems, "24h")
 		if err != nil {
-			log.Printf("[Reprocess] Groq batch submission failed, falling back to synchronous processing for all %d items: %v", len(items), err)
+			slog.Error(fmt.Sprintf("[Reprocess] Groq batch submission failed, falling back to synchronous processing for all %d items: %v", len(items), err))
 		} else {
-			log.Printf("[Reprocess] Batch submitted: %s — polling every 30s until complete...", groqBatchID)
+			slog.Info(fmt.Sprintf("[Reprocess] Batch submitted: %s — polling every 30s until complete...", groqBatchID))
 
 			var outputFileID string
 			for {
 				time.Sleep(30 * time.Second)
 				status, err := llmSvc.GetGroqBatchStatus(groqBatchID)
 				if err != nil {
-					log.Printf("[Reprocess]   status check failed: %v (retrying)", err)
+					slog.Error(fmt.Sprintf("[Reprocess]   status check failed: %v (retrying)", err))
 					continue
 				}
-				log.Printf("[Reprocess]   batch status=%s (%d/%d completed)", status.Status, status.RequestCounts.Completed, status.RequestCounts.Total)
+				slog.Info(fmt.Sprintf("[Reprocess]   batch status=%s (%d/%d completed)", status.Status, status.RequestCounts.Completed, status.RequestCounts.Total))
 				if status.Status == "completed" || status.Status == "failed" || status.Status == "expired" || status.Status == "cancelled" {
 					outputFileID = status.OutputFileID
 					break
@@ -364,7 +364,7 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 			if outputFileID != "" {
 				results, lineErrors, err := llmSvc.FetchExtractionBatchResults(outputFileID)
 				if err != nil {
-					log.Printf("[Reprocess]   failed to fetch batch results: %v", err)
+					slog.Error(fmt.Sprintf("[Reprocess]   failed to fetch batch results: %v", err))
 				}
 				for customID, extraction := range results {
 					cvFileID, _ := strconv.ParseInt(customID, 10, 64)
@@ -375,10 +375,10 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 				loggedLineErrors := 0
 				for customID, msg := range lineErrors {
 					if loggedLineErrors >= maxListedItems {
-						log.Printf("[Reprocess]   ... and %d more batch line failures (will retry synchronously)", len(lineErrors)-loggedLineErrors)
+						slog.Info(fmt.Sprintf("[Reprocess]   ... and %d more batch line failures (will retry synchronously)", len(lineErrors)-loggedLineErrors))
 						break
 					}
-					log.Printf("[Reprocess]   batch line failed for cv_files id=%s: %s (will retry synchronously)", customID, msg)
+					slog.Info(fmt.Sprintf("[Reprocess]   batch line failed for cv_files id=%s: %s (will retry synchronously)", customID, msg))
 					loggedLineErrors++
 				}
 			}
@@ -393,17 +393,17 @@ func Run(ctx context.Context, db *storage.DB, llmSvc *llm.Service, graphBuilder 
 		if applied[it.cvFileID] {
 			continue
 		}
-		log.Printf("[Reprocess] [cand=%d] %s: running synchronous LLM extraction (cv_files id=%d, %d chars)...",
-			it.bc.CandID, it.bc.Name, it.cvFileID, len(it.parsedText))
+		slog.Info(fmt.Sprintf("[Reprocess] [cand=%d] %s: running synchronous LLM extraction (cv_files id=%d, %d chars)...",
+			it.bc.CandID, it.bc.Name, it.cvFileID, len(it.parsedText)))
 		extraction, err := llmSvc.ExtractEntities(it.parsedText)
 		if err != nil {
-			log.Printf("[Reprocess]   SKIP: extraction failed: %v", err)
+			slog.Error(fmt.Sprintf("[Reprocess]   SKIP: extraction failed: %v", err))
 			failed++
 			continue
 		}
 		applyOne(it, extraction)
 	}
 
-	log.Printf("[Reprocess] Completed: %d fixed, %d failed (out of %d candidates found)", fixed, failed, len(broken))
+	slog.Info(fmt.Sprintf("[Reprocess] Completed: %d fixed, %d failed (out of %d candidates found)", fixed, failed, len(broken)))
 	return nil
 }

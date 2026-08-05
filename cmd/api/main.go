@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -37,26 +38,34 @@ import (
 // @schemes https
 
 func main() {
+	// Initialize structured logging (slog)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+	slog.SetDefault(logger)
+
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
-		log.Println("Warning: .env file not found, using environment variables")
+		slog.Warn("Warning: .env file not found, using environment variables")
 	}
 
 	cfg := config.LoadConfig()
 
 	if cfg.DatabaseURL == "" {
-		log.Fatal("set DATABASE_URL environment variable (e.g. postgres://user:pass@host:5432/dbname?sslmode=disable)")
+		slog.Error(fmt.Sprint("set DATABASE_URL environment variable (e.g. postgres://user:pass@host:5432/dbname?sslmode=disable)"))
+		os.Exit(1)
 	}
 
-	log.Println("Connecting to database...")
+	slog.Info("Connecting to database...")
 
 	db, err := storage.NewDB(cfg.DatabaseURL)
 	if err != nil {
-		log.Fatal("db open:", err)
+		slog.Error(fmt.Sprint("db open:", err))
+		os.Exit(1)
 	}
 	defer db.Close()
 
-	log.Println("Database connected successfully!")
+	slog.Info("Database connected successfully!")
 
 	apiSrv := api.NewAPI(db, cfg)
 	router := api.NewRouter(apiSrv)
@@ -94,14 +103,15 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
-			log.Println("server shutdown:", err)
+			slog.Info("server shutdown:", err)
 		}
 		close(idleConnsClosed)
 	}()
 
-	log.Printf("API server listening on :%s\n", port)
+	slog.Info(fmt.Sprintf("API server listening on :%s\n", port))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+		slog.Error(fmt.Sprint(err))
+		os.Exit(1)
 	}
 
 	<-idleConnsClosed
@@ -124,7 +134,7 @@ func runReprocessJob(apiSrv *api.API, cfg *config.Config) {
 		}
 	}
 
-	log.Printf("[ReprocessJob] Starting (dry_run=%v)...", dryRun)
+	slog.Info(fmt.Sprintf("[ReprocessJob] Starting (dry_run=%v)...", dryRun))
 
 	llmProvider := cfg.LLMProvider
 	var llmSvcOverride *llm.Service
@@ -139,10 +149,10 @@ func runReprocessJob(apiSrv *api.API, cfg *config.Config) {
 			apiKey = cfg.LLMAPIKey
 		}
 		if apiKey == "" {
-			log.Printf("[ReprocessJob] REPROCESS_LLM_PROVIDER=%s set but no matching API key configured, aborting", override)
+			slog.Info(fmt.Sprintf("[ReprocessJob] REPROCESS_LLM_PROVIDER=%s set but no matching API key configured, aborting", override))
 			return
 		}
-		log.Printf("[ReprocessJob] Using override provider=%s model=%s for this run", override, model)
+		slog.Info(fmt.Sprintf("[ReprocessJob] Using override provider=%s model=%s for this run", override, model))
 		llmSvcOverride = llm.NewService(override, apiKey, model)
 	}
 
@@ -159,9 +169,9 @@ func runReprocessJob(apiSrv *api.API, cfg *config.Config) {
 	}
 
 	if err := apiSrv.RunReprocessJob(context.Background(), llmSvcOverride, opts); err != nil {
-		log.Printf("[ReprocessJob] run failed: %v", err)
+		slog.Error(fmt.Sprintf("[ReprocessJob] run failed: %v", err))
 		return
 	}
 
-	log.Printf("[ReprocessJob] Finished. Set RUN_REPROCESS_JOB=false and redeploy so this doesn't run again on the next restart.")
+	slog.Info(fmt.Sprintf("[ReprocessJob] Finished. Set RUN_REPROCESS_JOB=false and redeploy so this doesn't run again on the next restart."))
 }

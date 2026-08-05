@@ -3,7 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -47,7 +47,7 @@ func (a *API) SuggestHandler(w http.ResponseWriter, r *http.Request) {
 
 	results, err := a.db.SuggestFromGraph(r.Context(), prefix, limit)
 	if err != nil {
-		log.Printf("[Suggest] DB error: %v", err)
+		slog.Error(fmt.Sprintf("[Suggest] DB error: %v", err))
 		http.Error(w, "suggest failed", http.StatusInternalServerError)
 		return
 	}
@@ -85,7 +85,7 @@ func (a *API) PopularQueriesHandler(w http.ResponseWriter, r *http.Request) {
 	// Fetch top skills + seniority levels from DB
 	skills, seniorities, err := a.db.GetTopSkillsForQueries(r.Context(), 6, 3)
 	if err != nil {
-		log.Printf("[PopularQueries] DB error: %v", err)
+		slog.Error(fmt.Sprintf("[PopularQueries] DB error: %v", err))
 		http.Error(w, "popular queries failed", http.StatusInternalServerError)
 		return
 	}

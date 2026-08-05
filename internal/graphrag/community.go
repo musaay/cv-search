@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"math/rand"
 	"strings"
@@ -43,7 +43,7 @@ type communityPerson struct {
 // embeds the summaries, and upserts results to graph_communities + community_members.
 // Safe to run repeatedly — uses ON CONFLICT DO UPDATE, never hard-deletes.
 func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) error {
-	log.Printf("[CommunityDetect] Starting embedding-based detection (level=%d)", level)
+	slog.Info(fmt.Sprintf("[CommunityDetect] Starting embedding-based detection (level=%d)", level))
 
 	if cd.embeddingService == nil {
 		return fmt.Errorf("embedding service not configured")
@@ -54,7 +54,7 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 		return fmt.Errorf("failed to load person embeddings: %w", err)
 	}
 	if len(persons) == 0 {
-		log.Printf("[CommunityDetect] No person embeddings found — upload CVs first")
+		slog.Info(fmt.Sprintf("[CommunityDetect] No person embeddings found — upload CVs first"))
 		return nil
 	}
 
@@ -68,7 +68,7 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 		k = len(persons)
 	}
 
-	log.Printf("[CommunityDetect] %d persons, k=%d", len(persons), k)
+	slog.Info(fmt.Sprintf("[CommunityDetect] %d persons, k=%d", len(persons), k))
 
 	// Purge stale memberships for this level before re-clustering.
 	// K may change between runs (new CVs added), so old assignments can be wrong.
@@ -81,9 +81,9 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 		)
 	`, level)
 	if err != nil {
-		log.Printf("[CommunityDetect] Failed to purge stale memberships (non-fatal): %v", err)
+		slog.Error(fmt.Sprintf("[CommunityDetect] Failed to purge stale memberships (non-fatal): %v", err))
 	} else {
-		log.Printf("[CommunityDetect] Purged stale community_members for level %d", level)
+		slog.Info(fmt.Sprintf("[CommunityDetect] Purged stale community_members for level %d", level))
 	}
 
 	assignments, centroids := cdKmeans(persons, k, 50)
@@ -118,7 +118,7 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 
 		title, summary, err := cd.generateCommunityProfile(skills, positions)
 		if err != nil {
-			log.Printf("[CommunityDetect] cluster %d: LLM failed (%v) — fallback", ci, err)
+			slog.Error(fmt.Sprintf("[CommunityDetect] cluster %d: LLM failed (%v) — fallback", ci, err))
 			n := 3
 			if len(skills) < n {
 				n = len(skills)
@@ -130,12 +130,12 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 			summary = fmt.Sprintf("A group of %d professionals with shared technical skills.", len(cl.personIntIDs))
 		}
 
-		log.Printf("[CommunityDetect] cluster %d (%d members): %q", ci, len(cl.personIntIDs), title)
+		slog.Info(fmt.Sprintf("[CommunityDetect] cluster %d (%d members): %q", ci, len(cl.personIntIDs), title))
 
 		var embeddingJSON string
 		summaryEmb, embErr := cd.embeddingService.GenerateEmbedding(ctx, title+" "+summary)
 		if embErr != nil {
-			log.Printf("[CommunityDetect] cluster %d: embed failed (non-fatal): %v", ci, embErr)
+			slog.Info(fmt.Sprintf("[CommunityDetect] cluster %d: embed failed (non-fatal): %v", ci, embErr))
 		} else {
 			b, _ := json.Marshal(summaryEmb)
 			embeddingJSON = string(b)
@@ -168,7 +168,7 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 			`, level, communityID, title, summary, len(cl.personIntIDs)).Scan(&gcID)
 		}
 		if upsertErr != nil {
-			log.Printf("[CommunityDetect] cluster %d: upsert failed: %v", ci, upsertErr)
+			slog.Info(fmt.Sprintf("[CommunityDetect] cluster %d: upsert failed: %v", ci, upsertErr))
 			continue
 		}
 
@@ -182,7 +182,7 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 				  SET membership_strength = EXCLUDED.membership_strength
 			`, gcID, nodeIntID, strength)
 			if err != nil {
-				log.Printf("[CommunityDetect] cluster %d member %d: insert failed: %v", ci, nodeIntID, err)
+				slog.Error(fmt.Sprintf("[CommunityDetect] cluster %d member %d: insert failed: %v", ci, nodeIntID, err))
 			}
 		}
 
@@ -196,7 +196,7 @@ func (cd *CommunityDetector) DetectCommunities(ctx context.Context, level int) e
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	log.Printf("[CommunityDetect] Done: %d/%d communities written", successCount, k)
+	slog.Info(fmt.Sprintf("[CommunityDetect] Done: %d/%d communities written", successCount, k))
 	return nil
 }
 
@@ -221,7 +221,7 @@ func (cd *CommunityDetector) loadPersonEmbeddings(ctx context.Context) ([]commun
 		}
 		var emb []float32
 		if err := json.Unmarshal([]byte(embText), &emb); err != nil {
-			log.Printf("[CommunityDetect] Failed to parse embedding for %s: %v", p.nodeID, err)
+			slog.Error(fmt.Sprintf("[CommunityDetect] Failed to parse embedding for %s: %v", p.nodeID, err))
 			continue
 		}
 		p.embedding = emb
@@ -399,7 +399,7 @@ func cdKmeans(persons []communityPerson, k int, maxIter int) ([]int, [][]float32
 			}
 		}
 		if !changed {
-			log.Printf("[CommunityDetect] K-means converged after %d iterations", iter+1)
+			slog.Info(fmt.Sprintf("[CommunityDetect] K-means converged after %d iterations", iter+1))
 			break
 		}
 		newCentroids := make([][]float32, k)
@@ -488,11 +488,11 @@ func (cd *CommunityDetector) AssignToClosestCommunity(ctx context.Context, perso
 		FROM graph_nodes 
 		WHERE node_id = $1 AND node_type = 'person' AND embedding IS NOT NULL
 	`, personNodeID).Scan(&personIntID, &personEmbStr)
-	
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// Expected if the node isn't embedded yet or doesn't exist
-			return nil 
+			return nil
 		}
 		return fmt.Errorf("failed to get person embedding: %w", err)
 	}
@@ -507,11 +507,11 @@ func (cd *CommunityDetector) AssignToClosestCommunity(ctx context.Context, perso
 		ORDER BY embedding <=> $1::vector ASC
 		LIMIT 1
 	`, personEmbStr).Scan(&gcID, &strength)
-	
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// No communities exist yet, we just wait for a full rebuild
-			return nil 
+			return nil
 		}
 		return fmt.Errorf("failed to find closest community: %w", err)
 	}
@@ -523,11 +523,11 @@ func (cd *CommunityDetector) AssignToClosestCommunity(ctx context.Context, perso
 		ON CONFLICT (community_id, node_id) DO UPDATE
 		  SET membership_strength = EXCLUDED.membership_strength
 	`, gcID, personIntID, strength)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to insert community membership: %w", err)
 	}
-	
-	log.Printf("[CommunityDetect] Incrementally assigned %s to community %d (strength: %.3f)", personNodeID, gcID, strength)
+
+	slog.Info(fmt.Sprintf("[CommunityDetect] Incrementally assigned %s to community %d (strength: %.3f)", personNodeID, gcID, strength))
 	return nil
 }

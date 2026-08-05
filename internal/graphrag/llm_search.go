@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 )
@@ -56,7 +56,7 @@ type LLMRankedCandidate struct {
 
 // Search performs LLM-based semantic search
 func (s *LLMSearchEngine) Search(ctx context.Context, query string) (*LLMSearchResult, error) {
-	log.Printf("[LLM Search] Starting semantic search for: %s", query)
+	slog.Info(fmt.Sprintf("[LLM Search] Starting semantic search for: %s", query))
 
 	// Step 1: Fetch ALL candidates from database (no SQL filtering)
 	allCandidates, err := s.fetchAllCandidates(ctx)
@@ -64,7 +64,7 @@ func (s *LLMSearchEngine) Search(ctx context.Context, query string) (*LLMSearchR
 		return nil, fmt.Errorf("failed to fetch candidates: %w", err)
 	}
 
-	log.Printf("[LLM Search] Loaded %d total candidates from database", len(allCandidates))
+	slog.Info(fmt.Sprintf("[LLM Search] Loaded %d total candidates from database", len(allCandidates)))
 
 	if len(allCandidates) == 0 {
 		return &LLMSearchResult{
@@ -114,14 +114,14 @@ func (s *LLMSearchEngine) fetchAllCandidates(ctx context.Context) ([]CandidateRe
 		var propsJSON []byte
 
 		if err := rows.Scan(&result.PersonID, &propsJSON); err != nil {
-			log.Printf("[LLM Search] Scan error: %v", err)
+			slog.Error(fmt.Sprintf("[LLM Search] Scan error: %v", err))
 			continue
 		}
 
 		// Parse properties
 		var props map[string]interface{}
 		if err := json.Unmarshal(propsJSON, &props); err != nil {
-			log.Printf("[LLM Search] JSON unmarshal error: %v", err)
+			slog.Error(fmt.Sprintf("[LLM Search] JSON unmarshal error: %v", err))
 			continue
 		}
 
@@ -159,8 +159,8 @@ func (s *LLMSearchEngine) enrichCandidate(ctx context.Context, candidate *Candid
 	).Scan(&internalID)
 
 	if err != nil {
-		log.Printf("[LLM Search] Failed to get internal ID for %s (node_id=%s): %v",
-			candidate.Name, candidate.PersonID, err)
+		slog.Error(fmt.Sprintf("[LLM Search] Failed to get internal ID for %s (node_id=%s): %v",
+			candidate.Name, candidate.PersonID, err))
 		return
 	}
 
@@ -176,7 +176,7 @@ func (s *LLMSearchEngine) enrichCandidate(ctx context.Context, candidate *Candid
 	`
 	rows, err := s.db.QueryContext(ctx, skillQuery, internalID)
 	if err != nil {
-		log.Printf("[LLM Search] Skill query error for %s: %v", candidate.Name, err)
+		slog.Error(fmt.Sprintf("[LLM Search] Skill query error for %s: %v", candidate.Name, err))
 	} else {
 		defer rows.Close()
 		for rows.Next() {
@@ -200,7 +200,7 @@ func (s *LLMSearchEngine) enrichCandidate(ctx context.Context, candidate *Candid
 	`
 	rows, err = s.db.QueryContext(ctx, companyQuery, internalID)
 	if err != nil {
-		log.Printf("[LLM Search] Company query error for %s: %v", candidate.Name, err)
+		slog.Error(fmt.Sprintf("[LLM Search] Company query error for %s: %v", candidate.Name, err))
 	} else {
 		defer rows.Close()
 		for rows.Next() {
@@ -224,7 +224,7 @@ func (s *LLMSearchEngine) enrichCandidate(ctx context.Context, candidate *Candid
 	`
 	rows, err = s.db.QueryContext(ctx, eduQuery, internalID)
 	if err != nil {
-		log.Printf("[LLM Search] Education query error for %s: %v", candidate.Name, err)
+		slog.Error(fmt.Sprintf("[LLM Search] Education query error for %s: %v", candidate.Name, err))
 	} else {
 		defer rows.Close()
 		for rows.Next() {
@@ -282,7 +282,7 @@ OUTPUT JSON (return ONLY valid JSON, no markdown):
 Return candidates sorted by relevance (best matches first). Include only candidates with "excellent" or "good" fit.
 `, query, len(candidates), candidateProfiles)
 
-	log.Printf("[LLM Search] Sending %d candidates to LLM for analysis", len(candidates))
+	slog.Info(fmt.Sprintf("[LLM Search] Sending %d candidates to LLM for analysis", len(candidates)))
 
 	response, err := s.llm.Generate(prompt)
 	if err != nil {
@@ -308,8 +308,8 @@ Return candidates sorted by relevance (best matches first). Include only candida
 	}
 
 	if err := json.Unmarshal([]byte(response), &llmResult); err != nil {
-		log.Printf("[LLM Search] Failed to parse LLM response: %v", err)
-		log.Printf("[LLM Search] Response was: %s", response)
+		slog.Error(fmt.Sprintf("[LLM Search] Failed to parse LLM response: %v", err))
+		slog.Info(fmt.Sprintf("[LLM Search] Response was: %s", response))
 		return nil, "", fmt.Errorf("failed to parse LLM response: %w", err)
 	}
 
@@ -361,7 +361,7 @@ Return candidates sorted by relevance (best matches first). Include only candida
 		return rankedCandidates[i].FinalScore > rankedCandidates[j].FinalScore
 	})
 
-	log.Printf("[LLM Search] LLM ranked %d candidates as relevant", len(rankedCandidates))
+	slog.Info(fmt.Sprintf("[LLM Search] LLM ranked %d candidates as relevant", len(rankedCandidates)))
 
 	return rankedCandidates, llmResult.OverallReasoning, nil
 }

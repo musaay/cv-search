@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -61,14 +61,14 @@ func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidate
 
 	if !s.disableCache {
 		if cachedScores, found := s.cache.Get(query, candidateIDs); found {
-			log.Printf("[LLMScorer] Cache HIT for query: %s (%d candidates)", query, len(cachedScores))
+			slog.Info(fmt.Sprintf("[LLMScorer] Cache HIT for query: %s (%d candidates)", query, len(cachedScores)))
 			return cachedScores, nil
 		}
 	} else {
-		log.Printf("[LLMScorer] Cache disabled — calling LLM directly")
+		slog.Info(fmt.Sprintf("[LLMScorer] Cache disabled — calling LLM directly"))
 	}
 
-	log.Printf("[LLMScorer] Scoring %d candidates in a single call for consistent ranking", len(candidates))
+	slog.Info(fmt.Sprintf("[LLMScorer] Scoring %d candidates in a single call for consistent ranking", len(candidates)))
 
 	prompt := s.buildScoringPrompt(query, candidates, communitySummaries)
 	response, err := s.llm.Generate(prompt)
@@ -85,7 +85,7 @@ func (s *LLMScorer) ScoreCandidates(ctx context.Context, query string, candidate
 		return nil, fmt.Errorf("LLM returned no scores")
 	}
 
-	log.Printf("[LLMScorer] Successfully scored %d candidates in a single call", len(allScores))
+	slog.Info(fmt.Sprintf("[LLMScorer] Successfully scored %d candidates in a single call", len(allScores)))
 
 	// Cache the combined results (skipped when cache is disabled, e.g. local dev)
 	if !s.disableCache {
@@ -174,7 +174,7 @@ func (s *LLMScorer) parseScoreResponse(response string) (*LLMScoreResponse, erro
 
 	var scoreResponse LLMScoreResponse
 	if err := json.Unmarshal([]byte(jsonStr), &scoreResponse); err != nil {
-		log.Printf("[LLMScorer] Failed to parse JSON: %v\nResponse: %s", err, jsonStr)
+		slog.Error(fmt.Sprintf("[LLMScorer] Failed to parse JSON: %v\nResponse: %s", err, jsonStr))
 		return nil, fmt.Errorf("json parse error: %w", err)
 	}
 

@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -124,7 +124,7 @@ func DefaultHybridConfig() HybridSearchConfig {
 
 // Search performs hybrid search with fusion
 func (h *HybridSearchEngine) Search(ctx context.Context, query string, config HybridSearchConfig) ([]FusedCandidate, error) {
-	log.Printf("[HybridSearch] Starting search for: %s", query)
+	slog.Info(fmt.Sprintf("[HybridSearch] Starting search for: %s", query))
 
 	// Step 0: Synchronous LLM Criteria Extraction (for Query Expansion)
 	var searchCriteria *SearchCriteria
@@ -132,13 +132,13 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	analyzer := NewQueryAnalyzer(h.llm)
 	searchCriteria, err = analyzer.AnalyzeQuery(ctx, query)
 	if err != nil {
-		log.Printf("[HybridSearch] Graph criteria extraction failed: %v", err)
+		slog.Error(fmt.Sprintf("[HybridSearch] Graph criteria extraction failed: %v", err))
 	}
 
 	searchString := query
 	if searchCriteria != nil && searchCriteria.ExpandedQuery != "" {
 		searchString = query + " " + searchCriteria.ExpandedQuery
-		log.Printf("[HybridSearch] Query expanded to: %s", searchString)
+		slog.Info(fmt.Sprintf("[HybridSearch] Query expanded to: %s", searchString))
 	}
 
 	// Semantic cache: if a semantically identical query ran recently, return immediately (<5ms)
@@ -147,11 +147,11 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	queryEmbedding, embErr = h.embeddingService.GenerateEmbedding(ctx, searchString)
 	if embErr == nil && !h.disableCache {
 		if cached, cachedQuery, found := h.semanticCache.Get(queryEmbedding); found {
-			log.Printf("[HybridSearch] Semantic cache HIT (similar to: %q) → %d cached results", cachedQuery, len(cached))
+			slog.Info(fmt.Sprintf("[HybridSearch] Semantic cache HIT (similar to: %q) → %d cached results", cachedQuery, len(cached)))
 			return cached, nil
 		}
 	} else {
-		log.Printf("[HybridSearch] Semantic cache embedding failed: %v", embErr)
+		slog.Info(fmt.Sprintf("[HybridSearch] Semantic cache embedding failed: %v", embErr))
 	}
 
 	// Clear ALL prepared statements once before parallel retrieval to prevent cache collisions
@@ -205,7 +205,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	// Graph search
 	go func() {
 		if searchCriteria == nil {
-			log.Printf("[HybridSearch] Graph search skipped (no criteria extracted)")
+			slog.Info(fmt.Sprintf("[HybridSearch] Graph search skipped (no criteria extracted)"))
 			graphResultsChan <- graphSearchResult{criteria: &SearchCriteria{}, results: []CandidateResult{}}
 			return
 		}
@@ -226,13 +226,13 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	for i := 0; i < 3; i++ {
 		select {
 		case bm25Results = <-bm25ResultsChan:
-			log.Printf("[HybridSearch] BM25 returned %d results", len(bm25Results))
+			slog.Info(fmt.Sprintf("[HybridSearch] BM25 returned %d results", len(bm25Results)))
 		case vectorResults = <-vectorResultsChan:
-			log.Printf("[HybridSearch] Vector returned %d results", len(vectorResults))
+			slog.Info(fmt.Sprintf("[HybridSearch] Vector returned %d results", len(vectorResults)))
 		case gr := <-graphResultsChan:
 			graphResults = gr.results
 			searchCriteria = gr.criteria
-			log.Printf("[HybridSearch] Graph returned %d results", len(graphResults))
+			slog.Info(fmt.Sprintf("[HybridSearch] Graph returned %d results", len(graphResults)))
 		case err := <-errChan:
 			return nil, err
 		}
@@ -269,11 +269,11 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		}
 		if len(skillFiltered) > 0 {
 			skillFilterActive = len(skillFiltered) < len(fusedCandidates)
-			log.Printf("[HybridSearch] Skill post-filter: %d → %d candidates (kept skill-relevant only)",
-				len(fusedCandidates), len(skillFiltered))
+			slog.Info(fmt.Sprintf("[HybridSearch] Skill post-filter: %d → %d candidates (kept skill-relevant only)",
+				len(fusedCandidates), len(skillFiltered)))
 			fusedCandidates = skillFiltered
 		} else {
-			log.Printf("[HybridSearch] Skill post-filter matched 0 candidates, skipping filter")
+			slog.Info(fmt.Sprintf("[HybridSearch] Skill post-filter matched 0 candidates, skipping filter"))
 		}
 	}
 
@@ -292,7 +292,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		for i := range fusedCandidates {
 			penalty := 1.0
 			c := fusedCandidates[i]
-			
+
 			// 1. Seniority mismatch penalty
 			if searchCriteria.Seniority != "" && c.Seniority != "" {
 				if !strings.EqualFold(c.Seniority, searchCriteria.Seniority) {
@@ -319,7 +319,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		}
 
 		if penalizedCount > 0 {
-			log.Printf("[HybridSearch] Experience/Seniority soft penalty applied to %d candidates", penalizedCount)
+			slog.Info(fmt.Sprintf("[HybridSearch] Experience/Seniority soft penalty applied to %d candidates", penalizedCount))
 		}
 	}
 
@@ -328,7 +328,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	if queryEmbedding != nil {
 		queryCommunityContext = h.fetchQueryCommunities(ctx, queryEmbedding)
 		if len(queryCommunityContext) > 0 {
-			log.Printf("[HybridSearch] Found %d relevant graph communities for query context", len(queryCommunityContext))
+			slog.Info(fmt.Sprintf("[HybridSearch] Found %d relevant graph communities for query context", len(queryCommunityContext)))
 		}
 	}
 
@@ -344,28 +344,28 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	if queryEmbedding != nil {
 		dbCommunities, dbErr := h.embeddingService.FindCommunitiesByEmbedding(ctx, queryEmbedding, 2)
 		if dbErr != nil {
-			log.Printf("[HybridSearch] FindCommunitiesByEmbedding failed (non-fatal): %v", dbErr)
+			slog.Info(fmt.Sprintf("[HybridSearch] FindCommunitiesByEmbedding failed (non-fatal): %v", dbErr))
 		} else if len(dbCommunities) > 0 {
 			queryCommunities = dbCommunities
-			log.Printf("[HybridSearch] Communities from embedding similarity: %v", queryCommunities)
+			slog.Info(fmt.Sprintf("[HybridSearch] Communities from embedding similarity: %v", queryCommunities))
 		}
 	}
 	if len(queryCommunities) == 0 && searchCriteria != nil && len(searchCriteria.Positions) > 0 {
 		dbPosCommunities, posErr := h.embeddingService.FindCommunitiesByPositionTitles(ctx, searchCriteria.Positions)
 		if posErr != nil {
-			log.Printf("[HybridSearch] FindCommunitiesByPositionTitles failed (non-fatal): %v", posErr)
+			slog.Info(fmt.Sprintf("[HybridSearch] FindCommunitiesByPositionTitles failed (non-fatal): %v", posErr))
 		} else if len(dbPosCommunities) > 0 {
 			queryCommunities = dbPosCommunities
-			log.Printf("[HybridSearch] Communities from position title DB lookup %v: %v", searchCriteria.Positions, queryCommunities)
+			slog.Info(fmt.Sprintf("[HybridSearch] Communities from position title DB lookup %v: %v", searchCriteria.Positions, queryCommunities))
 		}
 	}
 	if len(queryCommunities) == 0 {
 		queryCommunities = FindCommunitiesByQuery(query)
-		log.Printf("[HybridSearch] Communities from keyword fallback: %v", queryCommunities)
+		slog.Info(fmt.Sprintf("[HybridSearch] Communities from keyword fallback: %v", queryCommunities))
 	}
 	shouldUseCommunityFilter := !skillFilterActive && (config.UseCommunityFilter || len(fusedCandidates) >= config.CommunityThreshold)
 	if shouldUseCommunityFilter && len(fusedCandidates) > 0 {
-		log.Printf("[HybridSearch] Community filter enabled. Query matches communities: %v", queryCommunities)
+		slog.Info(fmt.Sprintf("[HybridSearch] Community filter enabled. Query matches communities: %v", queryCommunities))
 
 		// Filter candidates by overlapping communities (Microsoft GraphRAG approach)
 		filteredCandidates := make([]FusedCandidate, 0, len(fusedCandidates))
@@ -390,11 +390,11 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 		}
 
 		if len(filteredCandidates) > 0 {
-			log.Printf("[HybridSearch] Community filter reduced candidates from %d to %d",
-				len(fusedCandidates), len(filteredCandidates))
+			slog.Info(fmt.Sprintf("[HybridSearch] Community filter reduced candidates from %d to %d",
+				len(fusedCandidates), len(filteredCandidates)))
 			fusedCandidates = filteredCandidates
 		} else {
-			log.Printf("[HybridSearch] Community filter matched 0 candidates, keeping all")
+			slog.Info(fmt.Sprintf("[HybridSearch] Community filter matched 0 candidates, keeping all"))
 		}
 	}
 
@@ -420,7 +420,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	// Formula: FusionScore *= (0.25 + 0.75 * bestMatchingCommunityScore)
 	// → perfect match (score=1.0): no change; zero match (score=0): 0.25x penalty.
 	if len(queryCommunities) > 0 {
-		log.Printf("[HybridSearch] Community score boost active for: %v", queryCommunities)
+		slog.Info(fmt.Sprintf("[HybridSearch] Community score boost active for: %v", queryCommunities))
 		for i := range fusedCandidates {
 			bestScore := 0.0
 			for _, qc := range queryCommunities {
@@ -439,23 +439,23 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	// We MUST cap the number of candidates sent to the LLM to avoid HTTP 413 (Token limit exceeded) errors.
 	// Even if skillFilterActive is true, sending hundreds of candidates in a single prompt will crash the LLM.
 	if config.FinalTopN > 0 && len(fusedCandidates) > config.FinalTopN {
-		// Ensure list is strictly sorted by FusionScore before truncating, 
+		// Ensure list is strictly sorted by FusionScore before truncating,
 		// as earlier score modifiers (e.g., interview outcome) might have altered scores.
 		sort.Slice(fusedCandidates, func(i, j int) bool {
 			return fusedCandidates[i].FusionScore > fusedCandidates[j].FusionScore
 		})
-		
-		// If skill filter is active, we might want a slightly larger pool before LLM scoring, 
+
+		// If skill filter is active, we might want a slightly larger pool before LLM scoring,
 		// but we still must cap it strictly. We use FinalTopN as the hard limit.
 		fusedCandidates = fusedCandidates[:config.FinalTopN]
 	}
 
-	log.Printf("[HybridSearch] Fusion complete. Top %d candidates ready for LLM reranking", len(fusedCandidates))
+	slog.Info(fmt.Sprintf("[HybridSearch] Fusion complete. Top %d candidates ready for LLM reranking", len(fusedCandidates)))
 
 	// Step 4: LLM Reranking — persistent scorer keeps its cache alive across requests
 	llmScores, err := h.scorer.ScoreCandidates(ctx, query, fusedCandidates, queryCommunityContext)
 	if err != nil {
-		log.Printf("[HybridSearch] LLM scoring failed, returning fusion scores: %v", err)
+		slog.Error(fmt.Sprintf("[HybridSearch] LLM scoring failed, returning fusion scores: %v", err))
 		for i := range fusedCandidates {
 			fusedCandidates[i].LLMScore = fusedCandidates[i].FusionScore
 		}
@@ -496,17 +496,17 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	}
 
 	if len(validCandidates) == 0 {
-		log.Printf("[HybridSearch] No valid candidates found")
+		slog.Info(fmt.Sprintf("[HybridSearch] No valid candidates found"))
 		return []FusedCandidate{}, nil
 	}
 
-	log.Printf("[HybridSearch] Final ranking complete. Top candidate: %s (LLM Score: %.2f)",
-		validCandidates[0].Name, validCandidates[0].LLMScore)
+	slog.Info(fmt.Sprintf("[HybridSearch] Final ranking complete. Top candidate: %s (LLM Score: %.2f)",
+		validCandidates[0].Name, validCandidates[0].LLMScore))
 
 	// Store results in semantic cache for future similar queries (skipped in local dev)
 	if embErr == nil && !h.disableCache {
 		h.semanticCache.Set(queryEmbedding, query, validCandidates)
-		log.Printf("[HybridSearch] Results stored in semantic cache (30m TTL)")
+		slog.Info(fmt.Sprintf("[HybridSearch] Results stored in semantic cache (30m TTL)"))
 	}
 
 	return validCandidates, nil
@@ -532,7 +532,7 @@ func (h *HybridSearchEngine) fetchQueryCommunities(ctx context.Context, embeddin
 		LIMIT 3
 	`, string(embeddingJSON))
 	if err != nil {
-		log.Printf("[HybridSearch] fetchQueryCommunities failed (non-fatal): %v", err)
+		slog.Error(fmt.Sprintf("[HybridSearch] fetchQueryCommunities failed (non-fatal): %v", err))
 		return nil
 	}
 	defer rows.Close()
@@ -718,7 +718,7 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 
 	personRows, err := h.db.QueryContext(ctx, personQuery, personIDs...)
 	if err != nil {
-		log.Printf("[HybridSearch] Failed to batch load persons: %v", err)
+		slog.Error(fmt.Sprintf("[HybridSearch] Failed to batch load persons: %v", err))
 		return
 	}
 	defer personRows.Close()
@@ -802,7 +802,7 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 				}
 			}
 		} else {
-			log.Printf("[HybridSearch] Failed to batch load candidates: %v", err)
+			slog.Error(fmt.Sprintf("[HybridSearch] Failed to batch load candidates: %v", err))
 		}
 	}
 
@@ -819,7 +819,7 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 
 	skillRows, err := h.db.QueryContext(ctx, skillQuery, personIDs...)
 	if err != nil {
-		log.Printf("[HybridSearch] Failed to batch load skills: %v", err)
+		slog.Error(fmt.Sprintf("[HybridSearch] Failed to batch load skills: %v", err))
 	} else {
 		defer skillRows.Close()
 		for skillRows.Next() {
@@ -876,7 +876,7 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 
 	companyRows, err := h.db.QueryContext(ctx, companyQuery, personIDs...)
 	if err != nil {
-		log.Printf("[HybridSearch] Failed to batch load companies: %v", err)
+		slog.Error(fmt.Sprintf("[HybridSearch] Failed to batch load companies: %v", err))
 	} else {
 		defer companyRows.Close()
 		for companyRows.Next() {
@@ -946,7 +946,7 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 
 		communityRows, err := h.db.QueryContext(ctx, communityMemberQuery, personIDs...)
 		if err != nil {
-			log.Printf("[HybridSearch] Failed to batch load computed communities (non-fatal): %v", err)
+			slog.Error(fmt.Sprintf("[HybridSearch] Failed to batch load computed communities (non-fatal): %v", err))
 		} else {
 			defer communityRows.Close()
 			for communityRows.Next() {
@@ -1029,7 +1029,7 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 
 		ivRows, ivErr := h.db.QueryContext(ctx, interviewQuery, nodeIntIDs...)
 		if ivErr != nil {
-			log.Printf("[HybridSearch] Failed to batch load interviews (non-fatal): %v", ivErr)
+			slog.Info(fmt.Sprintf("[HybridSearch] Failed to batch load interviews (non-fatal): %v", ivErr))
 		} else {
 			defer ivRows.Close()
 			for ivRows.Next() {

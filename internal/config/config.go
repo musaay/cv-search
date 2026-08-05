@@ -1,7 +1,8 @@
 package config
 
 import (
-	"log"
+	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 
@@ -38,11 +39,11 @@ type Config struct {
 func LoadConfig() *Config {
 	err := godotenv.Load()
 	if err != nil {
-		log.Printf("Warning: Error loading .env file: %v", err)
-		log.Println("Attempting to load from parent directory...")
+		slog.Error(fmt.Sprintf("Warning: Error loading .env file: %v", err))
+		slog.Info("Attempting to load from parent directory...")
 		err = godotenv.Load("../../.env")
 		if err != nil {
-			log.Println("Warning: Could not load .env file, using environment variables")
+			slog.Info("Warning: Could not load .env file, using environment variables")
 		}
 	}
 

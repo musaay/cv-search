@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -183,16 +183,16 @@ func (s *EmbeddingService) BatchEmbedAllNodes(ctx context.Context) error {
 		nodeIDs = append(nodeIDs, nodeID)
 	}
 
-	log.Printf("[Embeddings] Starting batch embedding for %d nodes", len(nodeIDs))
+	slog.Info(fmt.Sprintf("[Embeddings] Starting batch embedding for %d nodes", len(nodeIDs)))
 
 	for i, nodeID := range nodeIDs {
 		if err := s.EmbedNode(ctx, nodeID); err != nil {
-			log.Printf("[Embeddings] Failed to embed node %s: %v", nodeID, err)
+			slog.Error(fmt.Sprintf("[Embeddings] Failed to embed node %s: %v", nodeID, err))
 			continue
 		}
 
 		if (i+1)%10 == 0 {
-			log.Printf("[Embeddings] Progress: %d/%d nodes embedded", i+1, len(nodeIDs))
+			slog.Info(fmt.Sprintf("[Embeddings] Progress: %d/%d nodes embedded", i+1, len(nodeIDs)))
 		}
 
 		// Rate limiting to avoid OpenAI 429 errors
@@ -203,7 +203,7 @@ func (s *EmbeddingService) BatchEmbedAllNodes(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("[Embeddings] Completed: %d nodes embedded", len(nodeIDs))
+	slog.Info(fmt.Sprintf("[Embeddings] Completed: %d nodes embedded", len(nodeIDs)))
 	return nil
 }
 
@@ -328,7 +328,7 @@ func (s *EmbeddingService) ReEmbedPersonNodeByID(ctx context.Context, graphNodeI
 		return fmt.Errorf("re-embed: DB update failed: %w", err)
 	}
 
-	log.Printf("[Embeddings] Re-embedded person node %d (%d interview notes merged)", graphNodeID, len(interviewNotes))
+	slog.Info(fmt.Sprintf("[Embeddings] Re-embedded person node %d (%d interview notes merged)", graphNodeID, len(interviewNotes)))
 	return nil
 }
 
@@ -388,7 +388,7 @@ func (s *EmbeddingService) FindCommunitiesByPositionTitles(ctx context.Context, 
 			LIMIT 3
 		`, term)
 		if err != nil {
-			log.Printf("[CommunityPositionLookup] query error for %q: %v", term, err)
+			slog.Error(fmt.Sprintf("[CommunityPositionLookup] query error for %q: %v", term, err))
 			return
 		}
 		defer rows.Close()
@@ -396,7 +396,7 @@ func (s *EmbeddingService) FindCommunitiesByPositionTitles(ctx context.Context, 
 			var communityID string
 			var cnt int
 			if err := rows.Scan(&communityID, &cnt); err == nil && !seen[communityID] {
-				log.Printf("[CommunityPositionLookup] %q → %s (%d members)", term, communityID, cnt)
+				slog.Info(fmt.Sprintf("[CommunityPositionLookup] %q → %s (%d members)", term, communityID, cnt))
 				seen[communityID] = true
 				result = append(result, communityID)
 			}
@@ -439,7 +439,7 @@ func (s *EmbeddingService) FindCommunitiesByEmbedding(ctx context.Context, query
 		if err := rows.Scan(&id, &dist); err != nil {
 			continue
 		}
-		log.Printf("[CommunityEmbed] %s dist=%.4f (threshold=%.2f)", id, dist, communityDistanceThreshold)
+		slog.Info(fmt.Sprintf("[CommunityEmbed] %s dist=%.4f (threshold=%.2f)", id, dist, communityDistanceThreshold))
 		if dist <= communityDistanceThreshold {
 			ids = append(ids, id)
 		}

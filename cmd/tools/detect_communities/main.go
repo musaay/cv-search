@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"math"
 	"math/rand"
 	"os"
@@ -52,11 +53,13 @@ func main() {
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		log.Fatal("DATABASE_URL is required")
+		slog.Error(fmt.Sprint("DATABASE_URL is required"))
+		os.Exit(1)
 	}
 	openAIKey := os.Getenv("OPENAI_API_KEY")
 	if openAIKey == "" {
-		log.Fatal("OPENAI_API_KEY is required for generating community embeddings")
+		slog.Error(fmt.Sprint("OPENAI_API_KEY is required for generating community embeddings"))
+		os.Exit(1)
 	}
 	llmProvider := os.Getenv("LLM_PROVIDER")
 	llmModel := os.Getenv("LLM_MODEL")
@@ -82,19 +85,19 @@ func main() {
 	ctx := context.Background()
 
 	// Step 1: Load all person nodes with embeddings.
-	log.Println("Loading person embeddings from graph_nodes...")
+	slog.Info("Loading person embeddings from graph_nodes...")
 	persons, err := loadPersonEmbeddings(ctx, conn)
 	if err != nil {
 		log.Fatalf("failed to load embeddings: %v", err)
 	}
-	log.Printf("Loaded %d persons with embeddings", len(persons))
+	slog.Info(fmt.Sprintf("Loaded %d persons with embeddings", len(persons)))
 
 	if len(persons) < k {
 		log.Fatalf("Not enough persons with embeddings (%d) for k=%d clusters. Upload more CVs first.", len(persons), k)
 	}
 
 	// Step 2: K-means clustering on embeddings.
-	log.Printf("Running k-means with k=%d (max 50 iterations)...", k)
+	slog.Info(fmt.Sprintf("Running k-means with k=%d (max 50 iterations)...", k))
 	assignments, centroids := kmeans(persons, k, 50)
 
 	// Step 3: Group persons by cluster and collect their positions.
@@ -114,7 +117,7 @@ func main() {
 	}
 
 	// Step 4: Load top skills per cluster from graph_edges.
-	log.Println("Loading top skills per cluster...")
+	slog.Info("Loading top skills per cluster...")
 	type clusterInfo struct {
 		idx      int
 		data     clusterData
@@ -124,12 +127,12 @@ func main() {
 	var activeClusters []clusterInfo
 	for ci := range clusters {
 		if len(clusters[ci].personIntIDs) == 0 {
-			log.Printf("[cluster %d] empty — skipping", ci)
+			slog.Info(fmt.Sprintf("[cluster %d] empty — skipping", ci))
 			continue
 		}
 		skills, err := loadTopSkillsForPersons(ctx, conn, clusters[ci].personIntIDs, 15)
 		if err != nil {
-			log.Printf("[cluster %d] failed to load skills (non-fatal): %v", ci, err)
+			slog.Error(fmt.Sprintf("[cluster %d] failed to load skills (non-fatal): %v", ci, err))
 		}
 		activeClusters = append(activeClusters, clusterInfo{
 			idx:      ci,
@@ -140,7 +143,7 @@ func main() {
 	}
 
 	// Step 5: Generate LLM title + summary for each cluster.
-	log.Println("Generating LLM summaries...")
+	slog.Info("Generating LLM summaries...")
 	type communityResult struct {
 		clusterIdx  int
 		communityID string
@@ -157,15 +160,15 @@ func main() {
 
 		title, summary, err := generateCommunitySummary(llmSvc, cl.skills, topPositions)
 		if err != nil {
-			log.Printf("[cluster %d] LLM failed: %v — using fallback", cl.idx, err)
+			slog.Error(fmt.Sprintf("[cluster %d] LLM failed: %v — using fallback", cl.idx, err))
 			topN := min(3, len(cl.skills))
 			title = fmt.Sprintf("Cluster %d", cl.idx)
 			summary = fmt.Sprintf("A group of %d professionals with skills: %s", len(cl.data.personIntIDs), strings.Join(cl.skills[:topN], ", "))
 		}
 
-		log.Printf("[cluster %d] %q — %d members | skills: %v | title: %s",
+		slog.Info(fmt.Sprintf("[cluster %d] %q — %d members | skills: %v | title: %s",
 			cl.idx, communityID, len(cl.data.personIntIDs),
-			cl.skills[:min(5, len(cl.skills))], title)
+			cl.skills[:min(5, len(cl.skills))], title))
 
 		results = append(results, communityResult{
 			clusterIdx:  cl.idx,
@@ -179,21 +182,21 @@ func main() {
 	}
 
 	if dryRun {
-		log.Println("\n--- DRY RUN COMPLETE (nothing written to DB) ---")
+		slog.Info("\n--- DRY RUN COMPLETE (nothing written to DB) ---")
 		for _, r := range results {
-			log.Printf("  [cluster_%d] %s (%d members)\n    %s", r.clusterIdx, r.title, r.nodeCount, r.summary)
+			slog.Info(fmt.Sprintf("  [cluster_%d] %s (%d members)\n    %s", r.clusterIdx, r.title, r.nodeCount, r.summary))
 		}
 		return
 	}
 
 	// Step 6: Embed summaries and write to graph_communities + community_members.
-	log.Println("Writing communities to DB...")
+	slog.Info("Writing communities to DB...")
 	for i, r := range results {
 		// 6a. Embed the title+summary for query-time similarity lookup.
-		log.Printf("[cluster %d/%d] Generating embedding for %q...", i+1, len(results), r.title)
+		slog.Info(fmt.Sprintf("[cluster %d/%d] Generating embedding for %q...", i+1, len(results), r.title))
 		summaryEmb, embErr := embSvc.GenerateEmbedding(ctx, r.title+" "+r.summary)
 		if embErr != nil {
-			log.Printf("[cluster %d] embedding failed (will store without embedding): %v", r.clusterIdx, embErr)
+			slog.Info(fmt.Sprintf("[cluster %d] embedding failed (will store without embedding): %v", r.clusterIdx, embErr))
 		}
 
 		// 6b. Upsert graph_communities.
@@ -225,7 +228,7 @@ func main() {
 			`, level, r.communityID, r.title, r.summary, r.nodeCount).Scan(&gcID)
 		}
 		if upsertErr != nil {
-			log.Printf("[cluster %d] failed to upsert graph_communities: %v", r.clusterIdx, upsertErr)
+			slog.Info(fmt.Sprintf("[cluster %d] failed to upsert graph_communities: %v", r.clusterIdx, upsertErr))
 			continue
 		}
 
@@ -244,8 +247,8 @@ func main() {
 			}
 		}
 
-		log.Printf("[cluster %d] %q — wrote %d members (%d failed)",
-			r.clusterIdx, r.title, len(r.data.personIntIDs)-membersFailed, membersFailed)
+		slog.Info(fmt.Sprintf("[cluster %d] %q — wrote %d members (%d failed)",
+			r.clusterIdx, r.title, len(r.data.personIntIDs)-membersFailed, membersFailed))
 
 		// Brief pause to stay within embedding API rate limits.
 		if i < len(results)-1 {
@@ -253,7 +256,7 @@ func main() {
 		}
 	}
 
-	log.Printf("Done. %d communities written to DB.", len(results))
+	slog.Info(fmt.Sprintf("Done. %d communities written to DB.", len(results)))
 }
 
 // loadPersonEmbeddings fetches all person nodes that have embeddings.
@@ -279,12 +282,12 @@ func loadPersonEmbeddings(ctx context.Context, db *sql.DB) ([]personNode, error)
 		var p personNode
 		var embText string
 		if err := rows.Scan(&p.id, &p.nodeID, &p.name, &p.position, &embText); err != nil {
-			log.Printf("scan error: %v", err)
+			slog.Error(fmt.Sprintf("scan error: %v", err))
 			continue
 		}
 		emb, err := parseVectorString(embText)
 		if err != nil {
-			log.Printf("failed to parse embedding for node %s: %v", p.nodeID, err)
+			slog.Error(fmt.Sprintf("failed to parse embedding for node %s: %v", p.nodeID, err))
 			continue
 		}
 		p.embedding = emb
@@ -430,7 +433,7 @@ func kmeans(persons []personNode, k int, maxIter int) ([]int, [][]float32) {
 		}
 
 		if !changed {
-			log.Printf("K-means converged after %d iterations", iter+1)
+			slog.Info(fmt.Sprintf("K-means converged after %d iterations", iter+1))
 			break
 		}
 

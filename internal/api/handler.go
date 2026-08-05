@@ -2,7 +2,7 @@ package api
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync"
@@ -17,9 +17,11 @@ import (
 
 // BatchJob holds per-file info within a batch upload.
 type BatchJob struct {
-	JobID    int64  `json:"job_id"`
+	JobID    int64  `json:"job_id,omitempty"` // 0 if skipped
 	Filename string `json:"filename"`
-	CVID     int64  `json:"cv_file_id"`
+	CVID     int64  `json:"cv_file_id,omitempty"`
+	Status   string `json:"status,omitempty"` // "duplicate", "error", etc. if skipped
+	Error    string `json:"error,omitempty"`
 }
 
 // BatchEntry groups all jobs created in a single bulk upload call.
@@ -126,18 +128,18 @@ func NewAPI(db *storage.DB, cfg *config.Config) *API {
 		// Setup Bidirectional Fallback (Groq <-> OpenAI) if both keys are present
 		openaiKey := cfg.OpenAIAPIKey
 		hasValidOpenAI := openaiKey != "" && openaiKey != "your_openai_api_key_here"
-		
+
 		groqKey := os.Getenv("GROQ_API_KEY")
 		hasValidGroq := groqKey != "" && groqKey != "your_groq_api_key_here"
 
 		if cfg.LLMProvider == "groq" && hasValidOpenAI {
 			fallbackSvc := llm.NewService("openai", openaiKey, "gpt-4o-mini") // Default lightweight fallback
 			llmSvc.WithFallback(fallbackSvc)
-			log.Println("[LLM] Two-way fallback enabled: Primary(Groq) -> Fallback(OpenAI)")
+			slog.Info("[LLM] Two-way fallback enabled: Primary(Groq) -> Fallback(OpenAI)")
 		} else if cfg.LLMProvider == "openai" && hasValidGroq {
 			fallbackSvc := llm.NewService("groq", groqKey, "llama-3.3-70b-versatile")
 			llmSvc.WithFallback(fallbackSvc)
-			log.Println("[LLM] Two-way fallback enabled: Primary(OpenAI) -> Fallback(Groq)")
+			slog.Info("[LLM] Two-way fallback enabled: Primary(OpenAI) -> Fallback(Groq)")
 		}
 	}
 

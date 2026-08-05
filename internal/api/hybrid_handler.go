@@ -2,7 +2,8 @@ package api
 
 import (
 	"encoding/json"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -126,13 +127,13 @@ func (a *API) HybridSearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	startTime := time.Now()
 
-	log.Printf("[API] Hybrid search: %s (BM25=%.2f, Vector=%.2f, Graph=%.2f)",
-		req.Query, config.BM25Weight, config.VectorWeight, config.GraphWeight)
+	slog.Info(fmt.Sprintf("[API] Hybrid search: %s (BM25=%.2f, Vector=%.2f, Graph=%.2f)",
+		req.Query, config.BM25Weight, config.VectorWeight, config.GraphWeight))
 
 	// Perform hybrid search
 	results, err := a.hybridSearchEngine.Search(r.Context(), req.Query, config)
 	if err != nil {
-		log.Printf("[API] Hybrid search failed: %v", err)
+		slog.Error(fmt.Sprintf("[API] Hybrid search failed: %v", err))
 		http.Error(w, "Search failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -191,5 +192,5 @@ func (a *API) HybridSearchHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 
-	log.Printf("[API] Hybrid search completed in %s, found %d candidates", processingTime, len(candidates))
+	slog.Info(fmt.Sprintf("[API] Hybrid search completed in %s, found %d candidates", processingTime, len(candidates)))
 }

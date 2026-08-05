@@ -2,7 +2,8 @@ package api
 
 import (
 	"encoding/json"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -51,17 +52,17 @@ func (a *API) GraphRAGSearchHandler(w http.ResponseWriter, r *http.Request) {
 	// Use EnhancedSearchEngine if available (Vector + Community + LLM)
 	// Otherwise fall back to LLM-only search
 	if a.enhancedSearchEngine != nil {
-		log.Printf("[Enhanced Search API] Using Vector + Community + LLM search for: %s", req.Query)
+		slog.Info(fmt.Sprintf("[Enhanced Search API] Using Vector + Community + LLM search for: %s", req.Query))
 
 		enhancedResult, err := a.enhancedSearchEngine.Search(r.Context(), req.Query)
 		if err != nil {
-			log.Printf("[Enhanced Search API] Search failed: %v", err)
+			slog.Error(fmt.Sprintf("[Enhanced Search API] Search failed: %v", err))
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		processingTime := time.Since(startTime)
-		log.Printf("[Enhanced Search API] Search completed in %v: %d candidates found", processingTime, len(enhancedResult.Candidates))
+		slog.Info(fmt.Sprintf("[Enhanced Search API] Search completed in %v: %d candidates found", processingTime, len(enhancedResult.Candidates)))
 
 		response := map[string]interface{}{
 			"query":                req.Query,
@@ -80,17 +81,17 @@ func (a *API) GraphRAGSearchHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fallback to LLM-only search
-	log.Printf("[LLM Search API] Using LLM-only search for: %s", req.Query)
+	slog.Info(fmt.Sprintf("[LLM Search API] Using LLM-only search for: %s", req.Query))
 
 	result, err := a.llmSearchEngine.Search(r.Context(), req.Query)
 	if err != nil {
-		log.Printf("[LLM Search API] Search failed: %v", err)
+		slog.Error(fmt.Sprintf("[LLM Search API] Search failed: %v", err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	processingTime := time.Since(startTime)
-	log.Printf("[LLM Search API] Search completed in %v: %d candidates found", processingTime, result.TotalFound)
+	slog.Info(fmt.Sprintf("[LLM Search API] Search completed in %v: %d candidates found", processingTime, result.TotalFound))
 
 	response := map[string]interface{}{
 		"query":              req.Query,
