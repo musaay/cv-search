@@ -27,10 +27,10 @@ func NewDB(dataSourceName string) (*DB, error) {
 	}
 
 	// Connection pool tuning
-	// Reduce pool size to minimize prepared statement cache collisions
-	db.SetMaxOpenConns(5)                   // Reduced from 25
-	db.SetMaxIdleConns(2)                   // Reduced from 10
-	db.SetConnMaxLifetime(1 * time.Minute)  // Reduced from 5 minutes
+	// Increase pool size to handle concurrent GraphRAG and background processing
+	db.SetMaxOpenConns(50)                  // Increased from 5
+	db.SetMaxIdleConns(25)                  // Increased from 2
+	db.SetConnMaxLifetime(5 * time.Minute)  // Restored to 5 minutes
 	db.SetConnMaxIdleTime(30 * time.Second) // Force conn reset
 
 	if err := db.Ping(); err != nil {
@@ -258,13 +258,35 @@ func (db *DB) FindCVByHash(ctx context.Context, contentHash string) (*CVFileInfo
 	return &info, nil
 }
 
-// SaveCVEntity saves extracted entity from CV
+// SaveCVEntity saves extracted entity from CV (Kept for backward compatibility)
 func (db *DB) SaveCVEntity(ctx context.Context, cvFileID int, entityType, entityValue string, confidence float64) error {
 	query := `
         INSERT INTO cv_entities (cv_file_id, entity_type, entity_value, confidence)
         VALUES ($1, $2, $3, $4)
     `
 	_, err := db.connection.ExecContext(ctx, query, cvFileID, entityType, entityValue, confidence)
+	return err
+}
+
+type CVEntityBatchItem struct {
+	Type       string
+	Value      string
+	Confidence float64
+}
+
+// SaveCVEntitiesBatch saves multiple extracted entities from CV in a single batch insert to avoid N+1 problems
+func (db *DB) SaveCVEntitiesBatch(ctx context.Context, cvFileID int, items []CVEntityBatchItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	query := `INSERT INTO cv_entities (cv_file_id, entity_type, entity_value, confidence) VALUES `
+	var vals []interface{}
+	for i, item := range items {
+		query += fmt.Sprintf("($%d, $%d, $%d, $%d),", i*4+1, i*4+2, i*4+3, i*4+4)
+		vals = append(vals, cvFileID, item.Type, item.Value, item.Confidence)
+	}
+	query = query[:len(query)-1] // remove trailing comma
+	_, err := db.connection.ExecContext(ctx, query, vals...)
 	return err
 }
 
@@ -1547,103 +1569,114 @@ func (db *DB) MergeCandidateNodes(ctx context.Context, masterID int, duplicateID
 		return fmt.Errorf("master candidate %d has no graph_node_id", masterID)
 	}
 
-	for _, dupID := range duplicateIDs {
-		if dupID == masterID {
-			continue
+	// Filter duplicates and get their graph_node_ids in one query
+	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(graph_node_id, 0) FROM candidates WHERE id = ANY($1) AND id != $2`, pq.Array(duplicateIDs), masterID)
+	if err != nil {
+		return fmt.Errorf("get duplicate candidate node ids: %w", err)
+	}
+	
+	var validDupIDs []int
+	var validDupNodeIDs []int
+	for rows.Next() {
+		var dID, nID int
+		if err := rows.Scan(&dID, &nID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan duplicate node id: %w", err)
 		}
-
-		var dupNodeID int
-		err := tx.QueryRowContext(ctx, `SELECT COALESCE(graph_node_id, 0) FROM candidates WHERE id = $1`, dupID).Scan(&dupNodeID)
-		if err != nil && err != sql.ErrNoRows {
-			return fmt.Errorf("get duplicate candidate %d graph_node_id: %w", dupID, err)
+		validDupIDs = append(validDupIDs, dID)
+		if nID > 0 {
+			validDupNodeIDs = append(validDupNodeIDs, nID)
 		}
+	}
+	rows.Close()
 
-		if dupNodeID > 0 {
-			// Transfer outgoing edges (source_node_id = dupNodeID -> masterNodeID)
-			_, err = tx.ExecContext(ctx, `
-				UPDATE graph_edges ge
-				SET source_node_id = $1
-				WHERE ge.source_node_id = $2
-				  AND NOT EXISTS (
-				      SELECT 1 FROM graph_edges ge2
-				      WHERE ge2.source_node_id = $1
-				        AND ge2.target_node_id = ge.target_node_id
-				        AND ge2.edge_type = ge.edge_type
-				  )
-			`, masterNodeID, dupNodeID)
-			if err != nil {
-				return fmt.Errorf("transfer outgoing edges from node %d: %w", dupNodeID, err)
-			}
-			_, err = tx.ExecContext(ctx, `DELETE FROM graph_edges WHERE source_node_id = $1`, dupNodeID)
-			if err != nil {
-				return fmt.Errorf("delete conflicting outgoing edges from node %d: %w", dupNodeID, err)
-			}
+	if len(validDupIDs) == 0 {
+		return nil
+	}
 
-			// Transfer incoming edges (target_node_id = dupNodeID -> masterNodeID)
-			_, err = tx.ExecContext(ctx, `
-				UPDATE graph_edges ge
-				SET target_node_id = $1
-				WHERE ge.target_node_id = $2
-				  AND NOT EXISTS (
-				      SELECT 1 FROM graph_edges ge2
-				      WHERE ge2.target_node_id = $1
-				        AND ge2.source_node_id = ge.source_node_id
-				        AND ge2.edge_type = ge.edge_type
-				  )
-			`, masterNodeID, dupNodeID)
-			if err != nil {
-				return fmt.Errorf("transfer incoming edges to node %d: %w", dupNodeID, err)
-			}
-			_, err = tx.ExecContext(ctx, `DELETE FROM graph_edges WHERE target_node_id = $1`, dupNodeID)
-			if err != nil {
-				return fmt.Errorf("delete conflicting incoming edges to node %d: %w", dupNodeID, err)
-			}
-		}
-
-		// Transfer CV files
-		_, err = tx.ExecContext(ctx, `UPDATE cv_files SET candidate_id = $1 WHERE candidate_id = $2`, masterID, dupID)
+	if len(validDupNodeIDs) > 0 {
+		// Transfer outgoing edges
+		_, err = tx.ExecContext(ctx, `
+			UPDATE graph_edges ge
+			SET source_node_id = $1
+			WHERE ge.source_node_id = ANY($2)
+			  AND NOT EXISTS (
+				  SELECT 1 FROM graph_edges ge2
+				  WHERE ge2.source_node_id = $1
+					AND ge2.target_node_id = ge.target_node_id
+					AND ge2.edge_type = ge.edge_type
+			  )
+		`, masterNodeID, pq.Array(validDupNodeIDs))
 		if err != nil {
-			return fmt.Errorf("transfer cv_files from candidate %d: %w", dupID, err)
+			return fmt.Errorf("transfer outgoing edges: %w", err)
 		}
-		if dupNodeID > 0 {
-			// Also re-link any cv_files referenced in node properties if candidate_id was null
-			_, err = tx.ExecContext(ctx, `
-				UPDATE cv_files SET candidate_id = $1
-				WHERE id IN (
-				    SELECT (properties->>'cv_id')::int
-				    FROM graph_nodes
-				    WHERE id = $2 AND properties->>'cv_id' ~ '^[0-9]+$'
-				) AND (candidate_id IS NULL OR candidate_id = $3)
-			`, masterID, dupNodeID, dupID)
-			if err != nil {
-				return fmt.Errorf("transfer cv_files from node properties %d: %w", dupNodeID, err)
-			}
-		}
-
-		// Transfer interviews
-		_, err = tx.ExecContext(ctx, `UPDATE interviews SET candidate_id = $1 WHERE candidate_id = $2`, masterID, dupID)
+		_, err = tx.ExecContext(ctx, `DELETE FROM graph_edges WHERE source_node_id = ANY($1)`, pq.Array(validDupNodeIDs))
 		if err != nil {
-			return fmt.Errorf("transfer interviews from candidate %d: %w", dupID, err)
+			return fmt.Errorf("delete conflicting outgoing edges: %w", err)
 		}
 
-		// Transfer candidate_scores (history)
-		_, err = tx.ExecContext(ctx, `UPDATE candidate_scores SET candidate_id = $1 WHERE candidate_id = $2`, masterID, dupID)
+		// Transfer incoming edges
+		_, err = tx.ExecContext(ctx, `
+			UPDATE graph_edges ge
+			SET target_node_id = $1
+			WHERE ge.target_node_id = ANY($2)
+			  AND NOT EXISTS (
+				  SELECT 1 FROM graph_edges ge2
+				  WHERE ge2.target_node_id = $1
+					AND ge2.source_node_id = ge.source_node_id
+					AND ge2.edge_type = ge.edge_type
+			  )
+		`, masterNodeID, pq.Array(validDupNodeIDs))
 		if err != nil {
-			return fmt.Errorf("transfer candidate_scores from candidate %d: %w", dupID, err)
+			return fmt.Errorf("transfer incoming edges: %w", err)
 		}
-
-		// Delete duplicate candidate (will CASCADE delete remaining references if any)
-		_, err = tx.ExecContext(ctx, `DELETE FROM candidates WHERE id = $1`, dupID)
+		_, err = tx.ExecContext(ctx, `DELETE FROM graph_edges WHERE target_node_id = ANY($1)`, pq.Array(validDupNodeIDs))
 		if err != nil {
-			return fmt.Errorf("delete candidate %d: %w", dupID, err)
+			return fmt.Errorf("delete conflicting incoming edges: %w", err)
 		}
+	}
 
-		// Delete duplicate graph node (will CASCADE delete community members, etc.)
-		if dupNodeID > 0 {
-			_, err = tx.ExecContext(ctx, `DELETE FROM graph_nodes WHERE id = $1`, dupNodeID)
-			if err != nil {
-				return fmt.Errorf("delete graph node %d: %w", dupNodeID, err)
-			}
+	// Bulk transfer candidate relations
+	_, err = tx.ExecContext(ctx, `UPDATE cv_files SET candidate_id = $1 WHERE candidate_id = ANY($2)`, masterID, pq.Array(validDupIDs))
+	if err != nil {
+		return fmt.Errorf("transfer cv_files: %w", err)
+	}
+	
+	if len(validDupNodeIDs) > 0 {
+		// Also re-link any cv_files referenced in node properties if candidate_id was null
+		_, err = tx.ExecContext(ctx, `
+			UPDATE cv_files SET candidate_id = $1
+			WHERE id IN (
+				SELECT (properties->>'cv_id')::int
+				FROM graph_nodes
+				WHERE id = ANY($2) AND properties->>'cv_id' ~ '^[0-9]+$'
+			) AND (candidate_id IS NULL OR candidate_id = ANY($3))
+		`, masterID, pq.Array(validDupNodeIDs), pq.Array(validDupIDs))
+		if err != nil {
+			return fmt.Errorf("transfer cv_files from node properties: %w", err)
+		}
+	}
+
+	_, err = tx.ExecContext(ctx, `UPDATE interviews SET candidate_id = $1 WHERE candidate_id = ANY($2)`, masterID, pq.Array(validDupIDs))
+	if err != nil {
+		return fmt.Errorf("transfer interviews: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `UPDATE candidate_scores SET candidate_id = $1 WHERE candidate_id = ANY($2)`, masterID, pq.Array(validDupIDs))
+	if err != nil {
+		return fmt.Errorf("transfer candidate_scores: %w", err)
+	}
+
+	// Delete duplicates (CASCADE applies)
+	_, err = tx.ExecContext(ctx, `DELETE FROM candidates WHERE id = ANY($1)`, pq.Array(validDupIDs))
+	if err != nil {
+		return fmt.Errorf("delete candidates: %w", err)
+	}
+
+	if len(validDupNodeIDs) > 0 {
+		_, err = tx.ExecContext(ctx, `DELETE FROM graph_nodes WHERE id = ANY($1)`, pq.Array(validDupNodeIDs))
+		if err != nil {
+			return fmt.Errorf("delete graph nodes: %w", err)
 		}
 	}
 

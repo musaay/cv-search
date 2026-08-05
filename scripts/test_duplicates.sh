@@ -33,7 +33,7 @@ fi
 # Test 2: Get Duplicate Candidate Groups
 echo -e "${BLUE}Test 2: Fetching Duplicate Candidate Groups (GET /api/candidates/duplicates)${NC}"
 echo -e "${YELLOW}Expected: JSON containing 'groups' array and 'total_groups' count.${NC}"
-DUPS_RES=$(curl -s "$BASE_URL/api/candidates/duplicates")
+DUPS_RES=$(curl -s -H "X-API-Key: ${API_KEY:-kartezya_secure_api_key_2026}" "$BASE_URL/api/candidates/duplicates")
 echo "$DUPS_RES" | jq .
 
 TOTAL_GROUPS=$(echo "$DUPS_RES" | jq -r '.total_groups // "error"')
@@ -48,6 +48,7 @@ fi
 echo -e "${BLUE}Test 3: Merge Endpoint Validation - Empty Payload (POST /api/candidates/merge)${NC}"
 echo -e "${YELLOW}Expected: HTTP 400 Bad Request (invalid/missing IDs)${NC}"
 HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/api/candidates/merge" \
+  -H "X-API-Key: ${API_KEY:-kartezya_secure_api_key_2026}" \
   -H "Content-Type: application/json" \
   -d '{}')
 
@@ -62,6 +63,7 @@ fi
 echo -e "${BLUE}Test 4: Merge Endpoint Error Handling - Non-existent IDs (POST /api/candidates/merge)${NC}"
 echo -e "${YELLOW}Expected: HTTP 500/Error response with clear error message (no rows in result set)${NC}"
 ERR_RES=$(curl -s -X POST "$BASE_URL/api/candidates/merge" \
+  -H "X-API-Key: ${API_KEY:-kartezya_secure_api_key_2026}" \
   -H "Content-Type: application/json" \
   -d '{"master_candidate_id": 999999, "duplicate_candidate_ids": [999998]}')
 echo "$ERR_RES"

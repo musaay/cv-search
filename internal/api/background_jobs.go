@@ -9,6 +9,7 @@ import (
 
 	"cv-search/internal/llm"
 	"cv-search/internal/reprocess"
+	"cv-search/internal/storage"
 )
 
 const communityDetectDebounce = 30 * time.Second
@@ -172,19 +173,21 @@ func (a *API) cvProcessingWorker() {
 // both paths apply identical downstream logic regardless of how the
 // extraction was obtained.
 func (a *API) applyExtraction(ctx context.Context, jobID, cvFileID int64, extraction *llm.CVExtraction) {
-	// Save extracted entities to cv_entities table
+	// Save extracted entities to cv_entities table in batch
+	var batchItems []storage.CVEntityBatchItem
 	for _, skill := range extraction.Skills {
-		_ = a.db.SaveCVEntity(ctx, int(cvFileID), "skill", skill.Name, skill.Confidence)
+		batchItems = append(batchItems, storage.CVEntityBatchItem{Type: "skill", Value: skill.Name, Confidence: skill.Confidence})
 	}
 	for _, company := range extraction.Companies {
-		_ = a.db.SaveCVEntity(ctx, int(cvFileID), "company", company.Name, company.Confidence)
+		batchItems = append(batchItems, storage.CVEntityBatchItem{Type: "company", Value: company.Name, Confidence: company.Confidence})
 	}
 	for _, edu := range extraction.Education {
-		_ = a.db.SaveCVEntity(ctx, int(cvFileID), "education", edu.Institution, 0.9)
+		batchItems = append(batchItems, storage.CVEntityBatchItem{Type: "education", Value: edu.Institution, Confidence: 0.9})
 	}
 	for _, loc := range extraction.Locations {
-		_ = a.db.SaveCVEntity(ctx, int(cvFileID), "location", loc, 0.85)
+		batchItems = append(batchItems, storage.CVEntityBatchItem{Type: "location", Value: loc, Confidence: 0.85})
 	}
+	_ = a.db.SaveCVEntitiesBatch(ctx, int(cvFileID), batchItems)
 
 	// Build graph from extraction
 	if a.graphBuilder != nil {

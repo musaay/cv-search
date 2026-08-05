@@ -59,6 +59,29 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// authMiddleware enforces X-API-Key header if APP_API_KEY is configured.
+func authMiddleware(apiKey string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip auth for Swagger and Health
+		if strings.HasPrefix(r.URL.Path, "/swagger/") || r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if apiKey != "" {
+			reqKey := r.Header.Get("X-API-Key")
+			if reqKey != apiKey {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error":"unauthorized: invalid or missing X-API-Key"}`))
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func NewRouter(a *API) http.Handler {
 	mux := http.NewServeMux()
 
@@ -107,5 +130,5 @@ func NewRouter(a *API) http.Handler {
 	mux.HandleFunc("GET /api/search/suggest", a.SuggestHandler)
 	mux.HandleFunc("GET /api/search/popular-queries", a.PopularQueriesHandler)
 
-	return corsMiddleware(mux)
+	return corsMiddleware(authMiddleware(a.cfg.AppAPIKey, mux))
 }

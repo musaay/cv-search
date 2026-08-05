@@ -39,11 +39,11 @@ func (b *BM25Searcher) Search(ctx context.Context, query string, limit int) ([]B
 			c.id,
 			COALESCE(gn.node_id, ''),
 			c.name,
-			ts_rank(c.search_vector, to_tsquery('english', $1)) as rank,
+			ts_rank(c.search_vector, websearch_to_tsquery('english', $1)) as rank,
 			LEFT(c.experience, 100) as headline
 		FROM candidates c
 		LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
-		WHERE c.search_vector @@ to_tsquery('english', $1)
+		WHERE c.search_vector @@ websearch_to_tsquery('english', $1)
 		ORDER BY rank DESC
 		LIMIT $2
 	`
@@ -85,6 +85,6 @@ func prepareTSQuery(query string) string {
 	}
 
 	// OR logic for maximum recall — ts_rank will sort by how many terms match.
-	// AND would require ALL terms in one row, which is too strict for skill lists.
-	return strings.Join(filtered, " | ")
+	// websearch_to_tsquery handles "OR" syntax gracefully.
+	return strings.Join(filtered, " OR ")
 }

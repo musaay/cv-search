@@ -20,6 +20,9 @@ type Config struct {
 	// OpenAI embeddings key — always needed for vector search, even when using Groq for LLM.
 	OpenAIAPIKey string
 
+	// App API Key for securing endpoints
+	AppAPIKey string
+
 	// File storage
 	UploadsDir string
 
@@ -96,6 +99,7 @@ func LoadConfig() *Config {
 		LLMModel:           llmModel,
 		LLMAPIKey:          llmAPIKey,
 		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
+		AppAPIKey:          os.Getenv("APP_API_KEY"),
 		UploadsDir:         os.Getenv("UPLOADS_DIR"),
 		DisableLLMCache:    os.Getenv("LLM_CACHE_DISABLED") == "true",
 		MaxFileSizeMB:      maxFileSizeMB,

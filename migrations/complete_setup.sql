@@ -30,6 +30,7 @@ CREATE INDEX IF NOT EXISTS idx_candidates_lower_trim_name ON candidates(LOWER(TR
 CREATE INDEX IF NOT EXISTS idx_candidates_email ON candidates(email);
 CREATE INDEX IF NOT EXISTS idx_candidates_location ON candidates(location);
 CREATE INDEX IF NOT EXISTS idx_candidates_created_at ON candidates(created_at);
+CREATE INDEX IF NOT EXISTS idx_candidates_graph_node_id ON candidates(graph_node_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_search_vector ON candidates USING GIN(search_vector);
 
 -- Full-text search trigger function

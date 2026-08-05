@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"code.sajari.com/docconv"
 )
@@ -40,17 +41,21 @@ func NewCVParser(uploadsDir string) *CVParser {
 
 // ParseFile extracts text from PDF/DOCX/TXT files
 func (p *CVParser) ParseFile(filename string, reader io.Reader) (*ParsedCV, error) {
-	// Save file temporarily
-	filePath := filepath.Join(p.uploadsDir, filename)
+	// Ensure uploads dir exists
 	if err := os.MkdirAll(p.uploadsDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create uploads dir: %w", err)
 	}
+
+	// Generate secure temporary filename to prevent Path Traversal
+	safeFilename := fmt.Sprintf("temp_%d_%s", time.Now().UnixNano(), filepath.Base(filename))
+	filePath := filepath.Join(p.uploadsDir, safeFilename)
 
 	file, err := os.Create(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create file: %w", err)
 	}
 	defer file.Close()
+	defer os.Remove(filePath) // Prevent temporary files from accumulating (Disk Exhaustion)
 
 	size, err := io.Copy(file, reader)
 	if err != nil {

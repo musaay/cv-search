@@ -34,6 +34,7 @@ func (a *API) CVUploadHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
 	maxFileSize := int64(a.cfg.MaxFileSizeMB) << 20
+	r.Body = http.MaxBytesReader(w, r.Body, maxFileSize+1024) // +1KB for form boundaries
 
 	// Parse multipart form
 	if err := r.ParseMultipartForm(maxFileSize); err != nil {
@@ -365,6 +366,8 @@ func (a *API) BulkCVUploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	maxBulkSize := int64(a.cfg.MaxFileSizeMB*a.cfg.MaxBulkFileCount) << 20
+	r.Body = http.MaxBytesReader(w, r.Body, maxBulkSize+1024)
+
 	if err := r.ParseMultipartForm(maxBulkSize); err != nil {
 		http.Error(w, fmt.Sprintf("request too large (max %d MB total)", a.cfg.MaxFileSizeMB*a.cfg.MaxBulkFileCount), http.StatusBadRequest)
 		return
