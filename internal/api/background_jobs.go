@@ -233,10 +233,17 @@ func (a *API) applyExtraction(ctx context.Context, jobID, cvFileID int64, extrac
 				}
 			}
 
-			// Queue background embedding job for newly created nodes
-			if len(newNodeIDs) > 0 {
-				a.QueueEmbeddingJob(cvFileID, newNodeIDs)
-				slog.Info(fmt.Sprintf("[ApplyExtraction] Job %d: Queued %d nodes for embedding", jobID, len(newNodeIDs)))
+			// Queue background embedding job for newly created nodes.
+			// Only "person" nodes are embedded — vector search only ever queries
+			// graph_nodes WHERE node_type='person' (see embeddings.go SimilaritySearch).
+			// Skill/company/education nodes are matched structurally via graph_edges
+			// (querier.go), never by embedding similarity, so embedding them wastes
+			// OpenAI API calls and bloats the graph_nodes table/HNSW index for no benefit.
+			personNodeIDs := filterPersonNodeIDs(newNodeIDs)
+			if len(personNodeIDs) > 0 {
+				a.QueueEmbeddingJob(cvFileID, personNodeIDs)
+				slog.Info(fmt.Sprintf("[ApplyExtraction] Job %d: Queued %d person node(s) for embedding (skipped %d non-person nodes)",
+					jobID, len(personNodeIDs), len(newNodeIDs)-len(personNodeIDs)))
 			}
 		}
 	}
@@ -294,6 +301,19 @@ func (a *API) requeueCVProcessingJob(job CVProcessingJob, delay time.Duration) {
 			a.db.UpdateJobStatus(ctx, job.JobID, "failed", &errMsg)
 		}
 	}()
+}
+
+// filterPersonNodeIDs keeps only "person_*" node IDs, dropping skill/company/education
+// nodes which are never read via vector similarity search (they're matched via graph_edges
+// instead — see GraphQuerier.buildQuery in querier.go).
+func filterPersonNodeIDs(nodeIDs []string) []string {
+	filtered := make([]string, 0, len(nodeIDs))
+	for _, id := range nodeIDs {
+		if strings.HasPrefix(id, "person_") {
+			filtered = append(filtered, id)
+		}
+	}
+	return filtered
 }
 
 // QueueEmbeddingJob adds a new embedding job to the background queue

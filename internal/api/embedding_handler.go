@@ -31,11 +31,14 @@ func (a *API) GenerateEmbeddingsHandler(w http.ResponseWriter, r *http.Request) 
 
 	slog.Info(fmt.Sprintf("[Embeddings API] Queueing background embedding generation..."))
 
-	// Get all nodes without embeddings
+	// Get all person nodes without embeddings. Only "person" nodes are ever queried via
+	// vector similarity (see EmbeddingService.SimilaritySearch) — skill/company/education
+	// nodes are matched structurally via graph_edges instead, so embedding them here would
+	// just re-introduce the storage/cost waste this filter avoids.
 	rows, err := a.db.GetConnection().QueryContext(r.Context(), `
 		SELECT node_id 
 		FROM graph_nodes 
-		WHERE embedding IS NULL
+		WHERE embedding IS NULL AND node_type = 'person'
 		ORDER BY created_at DESC
 	`)
 	if err != nil {
