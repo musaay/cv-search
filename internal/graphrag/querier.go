@@ -52,7 +52,7 @@ type SearchCriteria struct {
 	Skills        []string `json:"skills"`         // Required + preferred skills combined
 	Companies     []string `json:"companies"`      // Company names
 	Positions     []string `json:"positions"`      // Job titles
-	Seniority     string   `json:"seniority"`      // Junior|Mid-level|Senior|Lead|Architect
+	Seniorities   []string `json:"seniorities"`    // Ordered array: Exact match first, followed by acceptable higher/alternative levels (e.g., ["Senior", "Lead", "Architect"])
 	Education     []string `json:"education"`      // Institution or degree
 	MinExperience *int     `json:"min_experience"` // Minimum years
 	MaxExperience *int     `json:"max_experience"` // Maximum years
@@ -84,11 +84,11 @@ func NewGraphQuerier(db *sql.DB) *GraphQuerier {
 }
 
 // QueryGraph searches the graph based on criteria
-func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria) ([]CandidateResult, error) {
+func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria, limit int) ([]CandidateResult, error) {
 	slog.Info(fmt.Sprintf("[GraphRAG] Querying graph with criteria: %+v", criteria))
 
 	// Build SQL query dynamically based on criteria
-	query, args := q.buildQuery(criteria)
+	query, args := q.buildQuery(criteria, limit)
 
 	slog.Info(fmt.Sprintf("[GraphRAG] Executing SQL: %s", query))
 	slog.Info(fmt.Sprintf("[GraphRAG] With args: %v", args))
@@ -149,12 +149,12 @@ func (q *GraphQuerier) QueryGraph(ctx context.Context, criteria *SearchCriteria)
 	return results, nil
 }
 
-func (q *GraphQuerier) buildQuery(criteria *SearchCriteria) (string, []interface{}) {
+func (q *GraphQuerier) buildQuery(criteria *SearchCriteria, limit int) (string, []interface{}) {
 	// Add unique comment to prevent prepared statement cache collision
 	queryID := fmt.Sprintf("/* graphquery_%d */", time.Now().UnixNano())
 
 	baseQuery := queryID + `
-		SELECT DISTINCT p.node_id, p.properties
+		SELECT p.node_id, p.properties
 		FROM graph_nodes p
 		WHERE p.node_type = 'person'
 	`
@@ -164,10 +164,14 @@ func (q *GraphQuerier) buildQuery(criteria *SearchCriteria) (string, []interface
 	argIndex := 1
 
 	// Filter by seniority
-	if criteria.Seniority != "" {
-		conditions = append(conditions, fmt.Sprintf("p.properties->>'seniority' = $%d", argIndex))
-		args = append(args, criteria.Seniority)
-		argIndex++
+	if len(criteria.Seniorities) > 0 {
+		placeholders := make([]string, len(criteria.Seniorities))
+		for i, sen := range criteria.Seniorities {
+			placeholders[i] = fmt.Sprintf("$%d", argIndex)
+			args = append(args, sen)
+			argIndex++
+		}
+		conditions = append(conditions, fmt.Sprintf("p.properties->>'seniority' IN (%s)", strings.Join(placeholders, ",")))
 	}
 
 	// Filter by skills
@@ -252,7 +256,12 @@ func (q *GraphQuerier) buildQuery(criteria *SearchCriteria) (string, []interface
 		baseQuery += " AND " + strings.Join(conditions, " AND ")
 	}
 
-	baseQuery += " LIMIT 200" // Increased from 50 to capture more candidates for broad queries
+	// Prioritize candidates with the most experience so they don't get truncated by the LIMIT
+	baseQuery += " ORDER BY (p.properties->>'total_experience_years')::numeric DESC NULLS LAST"
+
+	if limit > 0 {
+		baseQuery += fmt.Sprintf(" LIMIT %d", limit)
+	}
 
 	return baseQuery, args
 }
@@ -345,6 +354,19 @@ func (q *GraphQuerier) enrichCandidatesBatch(ctx context.Context, results []Cand
 								company.DurationYears = duration
 							}
 						}
+						
+						// Dynamically calculate duration for current jobs
+						if company.IsCurrent {
+							if startFloat, ok := company.StartYear.(float64); ok {
+								currentYear := float64(time.Now().Year())
+								calcDuration := currentYear - startFloat
+								if calcDuration < 0.5 {
+									calcDuration = 0.5
+								}
+								company.DurationYears = calcDuration
+							}
+						}
+
 						results[idx].Companies = append(results[idx].Companies, company)
 					}
 				}

@@ -2,6 +2,7 @@ package graphrag
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -11,15 +12,43 @@ import (
 // QueryAnalyzer extracts structured criteria from natural language queries
 type QueryAnalyzer struct {
 	llmClient LLMClient
+	db        *sql.DB
 }
 
-func NewQueryAnalyzer(llmClient LLMClient) *QueryAnalyzer {
-	return &QueryAnalyzer{llmClient: llmClient}
+func NewQueryAnalyzer(llmClient LLMClient, db *sql.DB) *QueryAnalyzer {
+	return &QueryAnalyzer{llmClient: llmClient, db: db}
+}
+
+func (a *QueryAnalyzer) getValidSeniorities(ctx context.Context) string {
+	fallback := `["Junior", "Mid-level", "Senior", "Lead", "Architect", "Principal"]`
+	if a.db == nil {
+		return fallback
+	}
+	
+	rows, err := a.db.QueryContext(ctx, `SELECT DISTINCT properties->>'seniority' FROM graph_nodes WHERE node_type = 'person' AND properties->>'seniority' IS NOT NULL`)
+	if err != nil {
+		return fallback
+	}
+	defer rows.Close()
+
+	var levels []string
+	for rows.Next() {
+		var level string
+		if err := rows.Scan(&level); err == nil && level != "" {
+			levels = append(levels, fmt.Sprintf("%q", level))
+		}
+	}
+	if len(levels) == 0 {
+		return fallback
+	}
+	return "[" + strings.Join(levels, ", ") + "]"
 }
 
 // AnalyzeQuery converts natural language to structured search criteria
 func (a *QueryAnalyzer) AnalyzeQuery(ctx context.Context, query string) (*SearchCriteria, error) {
 	slog.Info(fmt.Sprintf("[GraphRAG] Analyzing query: %s", query))
+
+	validSeniorities := a.getValidSeniorities(ctx)
 
 	prompt := fmt.Sprintf(`You are a talent search query analyzer. Extract structured search criteria from the user's natural language query.
 
@@ -30,7 +59,7 @@ Extract and return ONLY valid JSON with this structure:
   "skills": ["skill names in canonical form"],
   "companies": ["company names"],
   "positions": ["job titles"],
-  "seniority": "Junior|Mid-level|Senior|Lead|Architect",
+  "seniorities": ["Expanded Level 1", "Expanded Level 2"], // Dynamic. E.g. if Junior, return ["Junior", "Entry-level"]. If Senior, return ["Senior", "Lead", "Architect", "Principal"].
   "education": ["institution names or degree types"],
   "min_experience": null,
   "max_experience": null,
@@ -44,10 +73,10 @@ Rules:
 - "developer", "engineer", "architect" are job titles/positions, NOT skills
 - For experience: "5+ years" → min_experience: 5, "3-5 years" → min_experience: 3, max_experience: 5
 - Return empty arrays for missing criteria, not null
-- If no specific seniority mentioned, leave it empty string ""
+- "seniorities": You are highly intelligent. Extract the requested seniority level, and dynamically expand it to include all logical synonyms and hierarchically acceptable higher titles. IMPORTANT: Our database only uses the following exact valid levels: %s. If the query implies one of these levels (e.g. "Uzman" -> "Mid-level", "Yeni Mezun" -> "Junior"), you MUST include the exact matching database valid level in your returned array, alongside any other synonyms. If no seniority is mentioned in the query, return [].
 - IMPORTANT Cross-Lingual Rule: In 'expanded_query', provide English and Turkish translations/synonyms of the requested job title and core skills as a single space-separated string (e.g. if query is "Senior Java Developer", expanded_query should be "Kıdemli Java Yazılım Mühendisi Teknik Lider").
 
-Now analyze this query and return ONLY the JSON:`, query)
+Now analyze this query and return ONLY the JSON:`, query, validSeniorities, query)
 
 	response, err := a.llmClient.Generate(prompt)
 	if err != nil {

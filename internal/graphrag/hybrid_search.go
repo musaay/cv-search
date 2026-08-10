@@ -18,20 +18,22 @@ type HybridSearchEngine struct {
 	bm25Searcher     *BM25Searcher
 	embeddingService *EmbeddingService
 	graphQuerier     *GraphQuerier
-	llm              LLMClient
+	queryLlm         LLMClient      // Used exclusively for analyzing user queries (e.g. Gemini)
+	scorerLlm        LLMClient      // Used for heavy lifting like scoring and extraction (e.g. Groq)
 	scorer           *LLMScorer     // persistent across requests so its LLM cache survives between searches
 	semanticCache    *SemanticCache // skip full pipeline for semantically identical queries
 	disableCache     bool           // when true, both semantic and LLM caches are bypassed (local dev)
 }
 
-func NewHybridSearchEngine(db *sql.DB, llm LLMClient, openaiKey string, disableCache bool) *HybridSearchEngine {
+func NewHybridSearchEngine(db *sql.DB, queryLlm LLMClient, scorerLlm LLMClient, openaiKey string, disableCache bool) *HybridSearchEngine {
 	return &HybridSearchEngine{
 		db:               db,
 		bm25Searcher:     NewBM25Searcher(db),
 		embeddingService: NewEmbeddingService(openaiKey, db),
 		graphQuerier:     NewGraphQuerier(db),
-		llm:              llm,
-		scorer:           NewLLMScorer(llm, disableCache),
+		queryLlm:         queryLlm,
+		scorerLlm:        scorerLlm,
+		scorer:           NewLLMScorer(scorerLlm, disableCache),
 		semanticCache:    NewSemanticCache(30*time.Minute, 0.95),
 		disableCache:     disableCache,
 	}
@@ -116,7 +118,7 @@ func DefaultHybridConfig() HybridSearchConfig {
 		VectorWeight:       0.6,
 		GraphWeight:        0.4,
 		TopK:               100,
-		FinalTopN:          8, // Skill-based searches bypass this (see Step 2.55). Used only for skill-less queries as an LLM cost guard.
+		FinalTopN:          20, // Skill-based searches bypass this (see Step 2.55). Used only for skill-less queries as an LLM cost guard.
 		UseCommunityFilter: false,
 		CommunityThreshold: 10,
 	}
@@ -129,7 +131,8 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	// Step 0: Synchronous LLM Criteria Extraction (for Query Expansion)
 	var searchCriteria *SearchCriteria
 	var err error
-	analyzer := NewQueryAnalyzer(h.llm)
+	// Step 1: Query Analysis (using the dedicated query LLM)
+	analyzer := NewQueryAnalyzer(h.queryLlm, h.db)
 	searchCriteria, err = analyzer.AnalyzeQuery(ctx, query)
 	if err != nil {
 		slog.Error(fmt.Sprintf("[HybridSearch] Graph criteria extraction failed: %v", err))
@@ -210,7 +213,7 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 			return
 		}
 
-		results, err := h.graphQuerier.QueryGraph(ctx, searchCriteria)
+		results, err := h.graphQuerier.QueryGraph(ctx, searchCriteria, config.TopK)
 		if err != nil {
 			errChan <- fmt.Errorf("graph failed: %w", err)
 			return
@@ -278,48 +281,57 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	}
 
 	// =====================================================================================================
-	// POST-FILTERING: Soft Penalty for Experience and Seniority Mismatches
+	// POST-FILTERING: Hard Filter for Experience and Seniority Mismatches
 	//
-	// Following Microsoft GraphRAG philosophy, we avoid dropping candidates with strict boolean filters.
-	// Instead, if a candidate's seniority or experience does not match the LLM-extracted constraints,
-	// we apply a severe penalty (FusionScore *= 0.1) to drop their rank drastically.
-	// However, if the candidate belongs to a highly relevant semantic community (e.g. Lead Developer),
-	// the Community Score Boost (applied later) will act as a life-saver and push them back up the ranks.
-	// This preserves both search precision and semantic flexibility.
+	// If the LLM has extracted specific Seniority or Experience constraints,
+	// we use them as strict requirements to avoid edge cases where Vector Search
+	// pushes completely unqualified candidates (like Juniors for a Senior role)
+	// to the top due to high text similarity.
 	// =====================================================================================================
 	if searchCriteria != nil {
-		penalizedCount := 0
-		for i := range fusedCandidates {
-			penalty := 1.0
-			c := fusedCandidates[i]
+		filteredCount := 0
+		var strictFiltered []FusedCandidate
+		for _, c := range fusedCandidates {
+			keep := true
 
-			// 1. Seniority mismatch penalty
-			if searchCriteria.Seniority != "" && c.Seniority != "" {
-				if !strings.EqualFold(c.Seniority, searchCriteria.Seniority) {
-					penalty *= 0.1
+			// 1. Seniority strict filter
+			if len(searchCriteria.Seniorities) > 0 && c.Seniority != "" {
+				matchFound := false
+				for _, s := range searchCriteria.Seniorities {
+					if strings.EqualFold(c.Seniority, s) {
+						matchFound = true
+						break
+					}
+				}
+				if !matchFound {
+					keep = false
 				}
 			}
-			// 2. Min Experience penalty
-			if searchCriteria.MinExperience != nil && *searchCriteria.MinExperience > 0 {
+			
+			// 2. Min Experience strict filter
+			if keep && searchCriteria.MinExperience != nil && *searchCriteria.MinExperience > 0 {
 				if c.TotalExperienceYears < *searchCriteria.MinExperience {
-					penalty *= 0.1
+					keep = false
 				}
 			}
-			// 3. Max Experience penalty
-			if searchCriteria.MaxExperience != nil && *searchCriteria.MaxExperience > 0 {
+			
+			// 3. Max Experience strict filter
+			if keep && searchCriteria.MaxExperience != nil && *searchCriteria.MaxExperience > 0 {
 				if c.TotalExperienceYears > *searchCriteria.MaxExperience {
-					penalty *= 0.1
+					keep = false
 				}
 			}
 
-			if penalty < 1.0 {
-				fusedCandidates[i].FusionScore *= penalty
-				penalizedCount++
+			if keep {
+				strictFiltered = append(strictFiltered, c)
+			} else {
+				filteredCount++
 			}
 		}
 
-		if penalizedCount > 0 {
-			slog.Info(fmt.Sprintf("[HybridSearch] Experience/Seniority soft penalty applied to %d candidates", penalizedCount))
+		if filteredCount > 0 {
+			slog.Info(fmt.Sprintf("[HybridSearch] Experience/Seniority Hard Filter eliminated %d candidates (kept %d)", filteredCount, len(strictFiltered)))
+			fusedCandidates = strictFiltered
 		}
 	}
 
@@ -367,35 +379,10 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	if shouldUseCommunityFilter && len(fusedCandidates) > 0 {
 		slog.Info(fmt.Sprintf("[HybridSearch] Community filter enabled. Query matches communities: %v", queryCommunities))
 
-		// Filter candidates by overlapping communities (Microsoft GraphRAG approach)
-		filteredCandidates := make([]FusedCandidate, 0, len(fusedCandidates))
-		for _, candidate := range fusedCandidates {
-			// Check if candidate has ANY matching community
-			matched := false
-			for _, qc := range queryCommunities {
-				for _, candidateCommunity := range candidate.Communities {
-					if candidateCommunity == qc {
-						matched = true
-						break
-					}
-				}
-				if matched {
-					break
-				}
-			}
-
-			if matched {
-				filteredCandidates = append(filteredCandidates, candidate)
-			}
-		}
-
-		if len(filteredCandidates) > 0 {
-			slog.Info(fmt.Sprintf("[HybridSearch] Community filter reduced candidates from %d to %d",
-				len(fusedCandidates), len(filteredCandidates)))
-			fusedCandidates = filteredCandidates
-		} else {
-			slog.Info(fmt.Sprintf("[HybridSearch] Community filter matched 0 candidates, keeping all"))
-		}
+		// Removed the strict community filter here because it drops candidates (like new uploads)
+		// who might not have been fully clustered yet.
+		// We rely on the Community Score Boost (Step 2.9) to penalize them softly instead.
+		slog.Info("[HybridSearch] Community strict filter is disabled to prevent dropping unclustered candidates.")
 	}
 
 	// Step 2.8: Interview outcome modifier.
@@ -922,6 +909,18 @@ func (h *HybridSearchEngine) enrichCandidates(ctx context.Context, candidates []
 			// WORKS_AT always means current employer regardless of stored props
 			if edgeType == "WORKS_AT" {
 				company.IsCurrent = true
+			}
+			
+			// Dynamically calculate duration for current jobs
+			if company.IsCurrent {
+				if startFloat, ok := company.StartYear.(float64); ok {
+					currentYear := float64(time.Now().Year())
+					calcDuration := currentYear - startFloat
+					if calcDuration < 0.5 {
+						calcDuration = 0.5
+					}
+					company.DurationYears = calcDuration
+				}
 			}
 
 			candidates[idx].Companies = append(candidates[idx].Companies, company)
