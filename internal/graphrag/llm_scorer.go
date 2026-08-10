@@ -42,7 +42,7 @@ type LLMScoreResponse struct {
 	Summary    string           `json:"summary"`
 }
 
-const llmBatchSize = 8 // single call; skill searches may send more, skill-less capped at FinalTopN=8
+const llmBatchSize = 20 // single call; skill searches may send more, skill-less capped at FinalTopN=20
 
 // ScoreCandidates sends candidates to LLM for scoring using parallel batches.
 // communitySummaries contains LLM-generated summaries of the most relevant graph communities

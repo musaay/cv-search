@@ -13,9 +13,9 @@ type Config struct {
 	DatabaseURL string
 
 	// LLM Configuration
-	LLMProvider string // "openai", "groq", or "none"
-	LLMModel    string // "gpt-4o-mini", "gpt-4o", "llama-3.3-70b-versatile"
-	LLMAPIKey   string // OpenAI or Groq API key (for LLM text generation)
+	LLMProvider string // "openai", "groq", "gemini", or "none"
+	LLMModel    string // e.g. "gpt-4o-mini", "llama-3.3-70b-versatile", "gemini-3.6-flash"
+	LLMAPIKey   string // API key for text generation
 
 	// OpenAI embeddings key — always needed for vector search, even when using Groq for LLM.
 	OpenAIAPIKey string
@@ -67,6 +67,8 @@ func LoadConfig() *Config {
 		llmAPIKey = os.Getenv("OPENAI_API_KEY")
 	} else if llmProvider == "groq" {
 		llmAPIKey = os.Getenv("GROQ_API_KEY")
+	} else if llmProvider == "gemini" {
+		llmAPIKey = os.Getenv("GEMINI_API_KEY")
 	}
 
 	maxFileSizeMB := 5 // default 5 MB

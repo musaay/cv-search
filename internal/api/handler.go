@@ -143,6 +143,19 @@ func NewAPI(db *storage.DB, cfg *config.Config) *API {
 		}
 	}
 
+	// Initialize dedicated Search LLM for QueryAnalyzer (e.g. Gemini 3.6 Flash)
+	var searchLlmSvc *llm.Service
+	searchProvider := os.Getenv("SEARCH_LLM_PROVIDER")
+	searchApiKey := os.Getenv("GEMINI_API_KEY")
+	
+	if searchProvider == "gemini" && searchApiKey != "" {
+		searchLlmSvc = llm.NewService(searchProvider, searchApiKey, "gemini-3.6-flash")
+		slog.Info("[LLM] Using dedicated Search LLM: Gemini 3.6 Flash")
+	} else {
+		// Fallback to the main LLM if no dedicated search LLM is configured
+		searchLlmSvc = llmSvc
+	}
+
 	// Initialize graph builder
 	graphBuilder := graphrag.NewGraphBuilder(db.GetConnection())
 
@@ -158,8 +171,9 @@ func NewAPI(db *storage.DB, cfg *config.Config) *API {
 		// Embeddings always require OpenAI key (even when LLM provider is Groq)
 		openaiKey := cfg.OpenAIAPIKey
 		if openaiKey != "" && openaiKey != "your_openai_api_key_here" {
+			searchLlmAdapter := graphrag.NewLLMAdapter(searchLlmSvc)
 			enhancedSearchEngine = graphrag.NewEnhancedSearchEngine(db.GetConnection(), llmAdapter, openaiKey)
-			hybridSearchEngine = graphrag.NewHybridSearchEngine(db.GetConnection(), llmAdapter, openaiKey, cfg.DisableLLMCache)
+			hybridSearchEngine = graphrag.NewHybridSearchEngine(db.GetConnection(), searchLlmAdapter, llmAdapter, openaiKey, cfg.DisableLLMCache)
 		}
 	}
 

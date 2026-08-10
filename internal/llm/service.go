@@ -30,6 +30,7 @@ const (
 	ProviderOpenAI Provider = "openai"
 	ProviderOllama Provider = "ollama"
 	ProviderGroq   Provider = "groq"
+	ProviderGemini Provider = "gemini"
 	ProviderNone   Provider = "none"
 )
 
@@ -139,6 +140,8 @@ func (s *Service) Generate(prompt string) (string, error) {
 		// Interactive (search) call site: fail fast on rate limit rather than
 		// hanging the user's HTTP request.
 		response, err = s.callGroq(prompt, interactiveMaxWait)
+	case ProviderGemini:
+		response, err = s.callGemini(prompt)
 	default:
 		return "", fmt.Errorf("unknown provider: %s", s.provider)
 	}
@@ -170,6 +173,8 @@ func (s *Service) ExtractEntities(cvText string) (*CVExtraction, error) {
 		// Background call site (async worker/offline tools): safe to wait
 		// longer for a rate-limited request instead of aborting.
 		response, err = s.callGroq(prompt, backgroundMaxWait)
+	case ProviderGemini:
+		response, err = s.callGemini(prompt)
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", s.provider)
 	}
@@ -193,6 +198,7 @@ func (s *Service) ExtractEntities(cvText string) (*CVExtraction, error) {
 }
 
 func (s *Service) buildPrompt(cvText string) string {
+	currentYear := time.Now().Year()
 	return fmt.Sprintf(`You are an expert CV parser. Extract structured information from this CV.
 
 CV Text:
@@ -241,7 +247,7 @@ Extract and return ONLY valid JSON (no markdown, no explanation) with this exact
 }
 
 Important:
-- Calculate 'total_experience_years' accurately by adding up all unique work durations from the start of their first relevant job to the current date. Do NOT skip any jobs. (e.g., 2015 to 2026 is 11 years).
+- Calculate 'total_experience_years' by subtracting the start year of their earliest relevant job from the current year (%d). Do NOT simply add up durations of overlapping projects. For example, if their earliest job started in 2010 and they are currently working, their total experience is %d - 2010 = %d years.
 - Determine 'seniority' strictly based on total experience: 0-2 years = Junior, 3-6 years = Mid-level, 7+ years = Senior. Unless explicitly stated otherwise as a higher title (Lead/Architect) in their current role.
 - Ignore any birth dates (e.g. 1990, 1995) completely. Never use a birth date as a job start or end year.
 - Only extract 'companies' from the actual work experience or employment history sections. Do NOT extract companies mentioned in summaries, projects, or random text.
@@ -257,7 +263,7 @@ Important:
 - Extract implicit skills (e.g., "built microservices" → add "Microservices")
 - Return empty arrays if no data found for a category
 - Use null for missing numeric values
-- For Turkish text, extract in English`, cvText)
+- For Turkish text, extract in English`, cvText, currentYear, currentYear, currentYear-2010)
 }
 
 func (s *Service) callOpenAI(prompt string) (string, error) {
@@ -324,6 +330,72 @@ func (s *Service) callOpenAI(prompt string) (string, error) {
 
 	if len(result.Choices) == 0 {
 		return "", fmt.Errorf("no response from OpenAI")
+	}
+
+	return result.Choices[0].Message.Content, nil
+}
+
+func (s *Service) callGemini(prompt string) (string, error) {
+	reqBody := map[string]interface{}{
+		"model": s.model,
+		"messages": []map[string]string{
+			{
+				"role":    "user",
+				"content": prompt,
+			},
+		},
+		"temperature": 0.0,
+		"response_format": map[string]string{
+			"type": "json_object",
+		},
+	}
+
+	jsonData, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequest("POST",
+		"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+		bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: s.timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Gemini API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	if err != nil {
+		return "", err
+	}
+
+	if result.Error.Message != "" {
+		return "", fmt.Errorf("Gemini error: %s", result.Error.Message)
+	}
+
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("no response from Gemini")
 	}
 
 	return result.Choices[0].Message.Content, nil
