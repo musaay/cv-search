@@ -178,6 +178,14 @@ func (c *SemanticCache) Set(queryEmbedding []float32, queryText string, results 
 			valid = append(valid, e)
 		}
 	}
+	
+	// FIX: Clear the pointers in the remaining capacity to prevent memory leaks.
+	// Otherwise, the expired *semanticCacheEntry objects (and their large Results arrays)
+	// will stay in memory until they are overwritten by new appends.
+	for i := len(valid); i < len(c.entries); i++ {
+		c.entries[i] = nil
+	}
+	
 	c.entries = valid
 
 	// If still over max capacity, trim oldest entries (entries are appended chronologically)
