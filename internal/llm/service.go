@@ -100,7 +100,7 @@ func NewService(provider, apiKey, model string) *Service {
 	}
 
 	if s.provider == ProviderGroq {
-		// Conservative default: Groq's published limit for llama-3.3-70b-versatile
+		// Conservative default: Groq's free-tier limit for openai/gpt-oss-120b
 		// is 30 RPM, shared org-wide across search + CV parsing + offline tools.
 		// Stay a bit under it so we don't need to rely on reactive 429 handling.
 		rpm := 25

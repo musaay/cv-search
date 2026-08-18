@@ -48,7 +48,7 @@ Bu proje, Microsoft'un GraphRAG (Graph Retrieval-Augmented Generation) metodoloj
 | **Knowledge Graph** | Nodes (person, skill, company, education) ve edges (HAS_SKILL, WORKED_AT) | PostgreSQL + pgvector |
 | **Vector Embeddings** | Semantic search için 768-dimensional embeddings | OpenAI `text-embedding-3-small` |
 | **Community Detection** | Skill clusters ve career patterns | Leiden algorithm |
-| **LLM Integration** | Natural language query parsing ve ranking | Groq (llama-3.3-70b-versatile) |
+| **LLM Integration** | Natural language query parsing ve ranking | Groq (openai/gpt-oss-120b) |
 | **Hybrid Search** | Vector + Community + LLM combined retrieval | Custom implementation |
 
 ### 🔬 Microsoft GraphRAG vs. Bu Proje
@@ -88,7 +88,7 @@ Bu proje, Microsoft'un GraphRAG (Graph Retrieval-Augmented Generation) metodoloj
 
 ### 🧠 GraphRAG Özellikleri
 
-- ✅ **LLM-Powered CV Extraction**: Groq (llama-3.3-70b) ile otomatik CV parsing
+- ✅ **LLM-Powered CV Extraction**: Groq (gpt-oss-120b) ile otomatik CV parsing
 - ✅ **Async Background Processing**: CV upload 11ms response, 318x performance improvement
 - ✅ **Duplicate Detection**: SHA-256 content hashing ile duplicate CV prevention
 - ✅ **Knowledge Graph**: PostgreSQL-based entity ve relationship modeling
@@ -186,7 +186,7 @@ Required environment variables:
 DATABASE_URL=postgresql://user:pass@localhost:5432/cv_search?sslmode=disable
 OPENAI_API_KEY=sk-...          # Required for embeddings
 LLM_PROVIDER=groq              # 'openai' or 'groq'
-LLM_MODEL=llama-3.3-70b-versatile  # or 'gpt-4o-mini'
+LLM_MODEL=openai/gpt-oss-120b  # or 'gpt-4o-mini'
 GROQ_API_KEY=gsk_...           # If using Groq (free!)
 USE_LLM=true
 ```
@@ -264,7 +264,7 @@ LLM_MODEL=gpt-4o-mini
 **Groq (Fast, free tier):**
 ```env
 LLM_PROVIDER=groq
-LLM_MODEL=llama-3.3-70b-versatile
+LLM_MODEL=openai/gpt-oss-120b
 GROQ_API_KEY=gsk_...
 ```
 

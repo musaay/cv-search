@@ -89,7 +89,7 @@ railway variables set OPENAI_API_KEY="sk-proj-..."
 # LLM Provider (choose one)
 railway variables set LLM_PROVIDER="groq"          # Free tier
 railway variables set GROQ_API_KEY="gsk_..."
-railway variables set LLM_MODEL="llama-3.3-70b-versatile"
+railway variables set LLM_MODEL="openai/gpt-oss-120b"
 
 # Or use OpenAI for LLM
 # railway variables set LLM_PROVIDER="openai"
