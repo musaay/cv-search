@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -523,6 +524,10 @@ func (a *API) scheduledCommunityDetectionWorker() {
 		} else {
 			slog.Info(fmt.Sprintf("[ScheduledCommunityDetect] Completed successfully"))
 		}
+
+		// Force the Go garbage collector to immediately return memory back to the OS
+		// after this massive memory-intensive clustering job, keeping our baseline low.
+		debug.FreeOSMemory()
 
 		cancel()
 	}
