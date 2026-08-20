@@ -60,6 +60,8 @@ type CandidateDetail struct {
 type CandidateListItem struct {
 	ID              int       `json:"id"`
 	Name            string    `json:"name"`
+	Email           string    `json:"email,omitempty"`
+	Phone           string    `json:"phone,omitempty"`
 	CurrentPosition string    `json:"current_position,omitempty"` // from graph_nodes.properties
 	Seniority       string    `json:"seniority,omitempty"`
 	InterviewCount  int       `json:"interview_count"`

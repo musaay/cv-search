@@ -349,7 +349,7 @@ func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery
 			SELECT COUNT(DISTINCT c.id)
 			FROM candidates c
 			LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
-			WHERE (c.name ILIKE $1 OR gn.properties->>'current_position' ILIKE $1 OR gn.properties->>'seniority' ILIKE $1)
+			WHERE (c.name ILIKE $1 OR gn.properties::text ILIKE $1)
 		`
 		searchParam := "%" + searchQuery + "%"
 		if err = db.connection.QueryRowContext(ctx, countQuery, searchParam).Scan(&total); err != nil {
@@ -391,6 +391,8 @@ func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery
 			SELECT
 				c.id,
 				c.name,
+				COALESCE(c.email, '') AS email,
+				COALESCE(c.phone, '') AS phone,
 				COALESCE(gn.properties->>'current_position', '') AS current_position,
 				COALESCE(gn.properties->>'seniority', '')         AS seniority,
 				COUNT(i.id)                                        AS interview_count,
@@ -405,7 +407,7 @@ func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery
 			FROM candidates c
 			LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
 			LEFT JOIN interviews i   ON i.candidate_id = c.id
-			WHERE (c.name ILIKE $1 OR gn.properties->>'current_position' ILIKE $1 OR gn.properties->>'seniority' ILIKE $1)
+			WHERE (c.name ILIKE $1 OR gn.properties::text ILIKE $1)
 			GROUP BY c.id, gn.properties
 			ORDER BY %s
 			LIMIT $2 OFFSET $3
@@ -417,6 +419,8 @@ func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery
 			SELECT
 				c.id,
 				c.name,
+				COALESCE(c.email, '') AS email,
+				COALESCE(c.phone, '') AS phone,
 				COALESCE(gn.properties->>'current_position', '') AS current_position,
 				COALESCE(gn.properties->>'seniority', '')         AS seniority,
 				COUNT(i.id)                                        AS interview_count,
@@ -447,14 +451,62 @@ func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery
 	for rows.Next() {
 		var item CandidateListItem
 		if err := rows.Scan(
-			&item.ID, &item.Name, &item.CurrentPosition, &item.Seniority,
+			&item.ID, &item.Name, &item.Email, &item.Phone, &item.CurrentPosition, &item.Seniority,
 			&item.InterviewCount, &item.LatestOutcome, &item.CreatedAt,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan candidate list row: %w", err)
 		}
 		result = append(result, item)
 	}
-	return result, total, rows.Err()
+	rows.Close() // close the primary rows so we can run a new query
+
+	var needRegexIDs []int
+	var placeholders []string
+	var args []interface{}
+	for _, item := range result {
+		if item.Email == "" || item.Phone == "" {
+			needRegexIDs = append(needRegexIDs, item.ID)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)+1))
+			args = append(args, item.ID)
+		}
+	}
+
+	if len(needRegexIDs) > 0 {
+		query := fmt.Sprintf(`
+			SELECT candidate_id, parsed_text 
+			FROM cv_files 
+			WHERE candidate_id IN (%s)
+		`, strings.Join(placeholders, ","))
+
+		cvRows, err := db.connection.QueryContext(ctx, query, args...)
+		if err == nil {
+			defer cvRows.Close()
+			emailRegex := regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+			phoneRegex := regexp.MustCompile(`(?:(?:\+?90|0)\s*)?5\d{2}[-\s]?\d{3}[-\s]?\d{4}`)
+
+			cvMap := make(map[int]string)
+			for cvRows.Next() {
+				var cID int
+				var pText string
+				if err := cvRows.Scan(&cID, &pText); err == nil {
+					cvMap[cID] = pText
+				}
+			}
+
+			for i := range result {
+				if pText, ok := cvMap[result[i].ID]; ok {
+					if result[i].Email == "" {
+						result[i].Email = emailRegex.FindString(pText)
+					}
+					if result[i].Phone == "" {
+						result[i].Phone = phoneRegex.FindString(pText)
+					}
+				}
+			}
+		}
+	}
+
+	return result, total, nil
 }
 
 // GetCandidateDetail returns the full candidate profile with all interviews.
