@@ -161,14 +161,14 @@ func (h *HybridSearchEngine) Search(ctx context.Context, query string, config Hy
 	h.db.Exec("DEALLOCATE ALL")
 
 	// Step 1: Parallel retrieval from 3 sources
-	bm25ResultsChan := make(chan []BM25Result)
-	vectorResultsChan := make(chan []VectorSearchResult)
+	bm25ResultsChan := make(chan []BM25Result, 1)
+	vectorResultsChan := make(chan []VectorSearchResult, 1)
 
 	type graphSearchResult struct {
 		criteria *SearchCriteria
 		results  []CandidateResult
 	}
-	graphResultsChan := make(chan graphSearchResult)
+	graphResultsChan := make(chan graphSearchResult, 1)
 	errChan := make(chan error, 3)
 
 	// BM25 search
