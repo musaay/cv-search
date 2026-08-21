@@ -159,8 +159,9 @@ func (a *API) ListCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 	search := r.URL.Query().Get("search")
 	sort := r.URL.Query().Get("sort")
 	direction := r.URL.Query().Get("direction")
+	outcome := r.URL.Query().Get("outcome")
 
-	candidates, total, err := a.db.ListCandidates(r.Context(), limit, offset, search, sort, direction)
+	candidates, total, err := a.db.ListCandidates(r.Context(), limit, offset, search, sort, direction, outcome)
 	if err != nil {
 		slog.Error(fmt.Sprintf("[CandidateHandler] ListCandidates failed: %v", err))
 		http.Error(w, "failed to list candidates", http.StatusInternalServerError)

@@ -336,30 +336,43 @@ func (db *DB) UpsertCandidateForGraphNode(ctx context.Context, graphNodeID int, 
 }
 
 // ListCandidates returns a paginated list of candidates with basic enrichment from graph_nodes and the total count.
-func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery, sortKey, direction string) ([]CandidateListItem, int, error) {
+func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery, sortKey, direction, outcomeFilter string) ([]CandidateListItem, int, error) {
 	db.connection.ExecContext(ctx, "DEALLOCATE ALL")
 
 	var total int
 	searchQuery = strings.TrimSpace(searchQuery)
-	var countQuery string
-	var err error
+	outcomeFilter = strings.TrimSpace(outcomeFilter)
+
+	var whereClauses []string
+	var args []interface{}
+	argID := 1
 
 	if searchQuery != "" {
-		countQuery = `
-			SELECT COUNT(DISTINCT c.id)
-			FROM candidates c
-			LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
-			WHERE (c.name ILIKE $1 OR gn.properties::text ILIKE $1)
-		`
-		searchParam := "%" + searchQuery + "%"
-		if err = db.connection.QueryRowContext(ctx, countQuery, searchParam).Scan(&total); err != nil {
-			return nil, 0, fmt.Errorf("count candidates with search failed: %w", err)
-		}
-	} else {
-		countQuery = "SELECT COUNT(*) FROM candidates"
-		if err = db.connection.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
-			return nil, 0, fmt.Errorf("count candidates failed: %w", err)
-		}
+		whereClauses = append(whereClauses, fmt.Sprintf("(c.name ILIKE $%d OR gn.properties::text ILIKE $%d)", argID, argID))
+		args = append(args, "%"+searchQuery+"%")
+		argID++
+	}
+
+	if outcomeFilter != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("COALESCE((SELECT outcome FROM interviews WHERE candidate_id = c.id ORDER BY interview_date DESC, id DESC LIMIT 1), '') = $%d", argID))
+		args = append(args, outcomeFilter)
+		argID++
+	}
+
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	countQuery := fmt.Sprintf(`
+		SELECT COUNT(DISTINCT c.id)
+		FROM candidates c
+		LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
+		%s
+	`, whereSQL)
+
+	if err := db.connection.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count candidates failed: %w", err)
 	}
 
 	// Prepare ORDER BY clause
@@ -384,63 +397,34 @@ func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery
 		orderBy = fmt.Sprintf("c.created_at %s", dir)
 	}
 
-	var query string
-	var rows *sql.Rows
-	if searchQuery != "" {
-		query = fmt.Sprintf(`
-			SELECT
-				c.id,
-				c.name,
-				COALESCE(c.email, '') AS email,
-				COALESCE(c.phone, '') AS phone,
-				COALESCE(gn.properties->>'current_position', '') AS current_position,
-				COALESCE(gn.properties->>'seniority', '')         AS seniority,
-				COUNT(i.id)                                        AS interview_count,
-				COALESCE(
-					(SELECT outcome FROM interviews
-					 WHERE candidate_id = c.id
-					 ORDER BY interview_date DESC, id DESC
-					 LIMIT 1),
-					''
-				)                                                  AS latest_outcome,
-				c.created_at
-			FROM candidates c
-			LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
-			LEFT JOIN interviews i   ON i.candidate_id = c.id
-			WHERE (c.name ILIKE $1 OR gn.properties::text ILIKE $1)
-			GROUP BY c.id, gn.properties
-			ORDER BY %s
-			LIMIT $2 OFFSET $3
-		`, orderBy)
-		searchParam := "%" + searchQuery + "%"
-		rows, err = db.connection.QueryContext(ctx, query, searchParam, limit, offset)
-	} else {
-		query = fmt.Sprintf(`
-			SELECT
-				c.id,
-				c.name,
-				COALESCE(c.email, '') AS email,
-				COALESCE(c.phone, '') AS phone,
-				COALESCE(gn.properties->>'current_position', '') AS current_position,
-				COALESCE(gn.properties->>'seniority', '')         AS seniority,
-				COUNT(i.id)                                        AS interview_count,
-				COALESCE(
-					(SELECT outcome FROM interviews
-					 WHERE candidate_id = c.id
-					 ORDER BY interview_date DESC, id DESC
-					 LIMIT 1),
-					''
-				)                                                  AS latest_outcome,
-				c.created_at
-			FROM candidates c
-			LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
-			LEFT JOIN interviews i   ON i.candidate_id = c.id
-			GROUP BY c.id, gn.properties
-			ORDER BY %s
-			LIMIT $1 OFFSET $2
-		`, orderBy)
-		rows, err = db.connection.QueryContext(ctx, query, limit, offset)
-	}
+	query := fmt.Sprintf(`
+		SELECT
+			c.id,
+			c.name,
+			COALESCE(c.email, '') AS email,
+			COALESCE(c.phone, '') AS phone,
+			COALESCE(gn.properties->>'current_position', '') AS current_position,
+			COALESCE(gn.properties->>'seniority', '')         AS seniority,
+			COUNT(i.id)                                        AS interview_count,
+			COALESCE(
+				(SELECT outcome FROM interviews
+				 WHERE candidate_id = c.id
+				 ORDER BY interview_date DESC, id DESC
+				 LIMIT 1),
+				''
+			)                                                  AS latest_outcome,
+			c.created_at
+		FROM candidates c
+		LEFT JOIN graph_nodes gn ON gn.id = c.graph_node_id
+		LEFT JOIN interviews i   ON i.candidate_id = c.id
+		%s
+		GROUP BY c.id, gn.properties
+		ORDER BY %s
+		LIMIT $%d OFFSET $%d
+	`, whereSQL, orderBy, argID, argID+1)
+
+	args = append(args, limit, offset)
+	rows, err := db.connection.QueryContext(ctx, query, args...)
 
 	if err != nil {
 		return nil, 0, fmt.Errorf("list candidates failed: %w", err)
@@ -462,12 +446,12 @@ func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery
 
 	var needRegexIDs []int
 	var placeholders []string
-	var args []interface{}
+	regexArgs := []interface{}{}
 	for _, item := range result {
 		if item.Email == "" || item.Phone == "" {
 			needRegexIDs = append(needRegexIDs, item.ID)
-			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)+1))
-			args = append(args, item.ID)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(regexArgs)+1))
+			regexArgs = append(regexArgs, item.ID)
 		}
 	}
 
@@ -478,7 +462,7 @@ func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery
 			WHERE candidate_id IN (%s)
 		`, strings.Join(placeholders, ","))
 
-		cvRows, err := db.connection.QueryContext(ctx, query, args...)
+		cvRows, err := db.connection.QueryContext(ctx, query, regexArgs...)
 		if err == nil {
 			defer cvRows.Close()
 			emailRegex := regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
