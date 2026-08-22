@@ -354,8 +354,9 @@ func (db *DB) ListCandidates(ctx context.Context, limit, offset int, searchQuery
 	}
 
 	if outcomeFilter != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("COALESCE((SELECT outcome FROM interviews WHERE candidate_id = c.id ORDER BY interview_date DESC, id DESC LIMIT 1), '') = $%d", argID))
-		args = append(args, outcomeFilter)
+		outcomes := strings.Split(outcomeFilter, ",")
+		whereClauses = append(whereClauses, fmt.Sprintf("COALESCE((SELECT outcome FROM interviews WHERE candidate_id = c.id ORDER BY interview_date DESC, id DESC LIMIT 1), '') = ANY($%d::text[])", argID))
+		args = append(args, pq.Array(outcomes))
 		argID++
 	}
 
